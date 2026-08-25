@@ -16,9 +16,9 @@ Reactive programming with Apple's Combine framework.
 ```swift
 // ✅ Basic subscription
 let publisher = Just("Hello")
-let subscriber = publisher.sink { value in
+let cancellable = publisher.sink { value in
     print(value)  // "Hello"
-}
+}  // sink returns AnyCancellable, not a Subscriber
 ```
 
 ### Creating Publishers
@@ -27,11 +27,13 @@ let subscriber = publisher.sink { value in
 // ✅ Just - single value
 Just(42)
 
-// ✅ Future - async result
-Future { promise in
-    promise(.success(42))
-    // or
-    promise(.failure(URLError(.badServerResponse)))
+// ✅ Future - one async result. Eager: the closure runs immediately at creation
+// and the result is cached. Wrap in Deferred for lazy, per-subscriber execution.
+Deferred {
+    Future<Int, URLError> { promise in
+        promise(.success(42))
+        // or promise(.failure(URLError(.badServerResponse)))
+    }
 }
 
 // ✅ PassthroughSubject - broadcast
@@ -63,7 +65,7 @@ class ViewModel: ObservableObject {
 // ✅ flatMap - nested publishers
 [1, 2, 3].publisher
     .flatMap { value in
-        Future { promise in
+        Future<Int, Never> { promise in
             promise(.success(value * 2))
         }
     }
@@ -88,9 +90,10 @@ class ViewModel: ObservableObject {
     .removeDuplicates()
     .sink { print($0) }  // 1, 2, 3
 
-// ✅ debounce - wait for pause
+// ✅ debounce - wait for pause. Prefer DispatchQueue.main over RunLoop.main:
+// RunLoop.main does not fire while the run loop is in tracking mode (scrolling).
 searchTextPublisher
-    .debounce(for: .milliseconds(300), scheduler: RunLoop.main)
+    .debounce(for: .milliseconds(300), scheduler: DispatchQueue.main)
     .sink { text in
         performSearch(text)
     }
@@ -99,7 +102,7 @@ searchTextPublisher
 ### Combine
 
 ```swift
-// ✅ combineLatest - waits for both
+// ✅ combineLatest - emits once both have emitted, then on every change of either
 let namePublisher = CurrentValueSubject<String, Never>("")
 let agePublisher = CurrentValueSubject<Int, Never>(0)
 
@@ -133,23 +136,28 @@ failingPublisher
     }
     .sink { print($0) }
 
-// ✅ retry - attempt on failure
+// ✅ retry - resubscribe on failure (up to 3 more times). Failure type is
+// unchanged, so the two-closure sink is still required.
 failingPublisher
     .retry(3)
-    .sink { print($0) }
+    .sink { completion in
+        // still fails after retries exhaust
+    } receiveValue: { print($0) }
 
 // ✅ replaceError - replace with default
 riskyPublisher
     .replaceError(with: "Default")
     .sink { print($0) }
 
-// ✅ mapError - transform error
+// ✅ mapError - transform error. Errors arrive in receiveCompletion, not receiveValue.
 riskyPublisher
-    .mapError { error in
-        return MyError.custom(error)
-    }
-    .sink { _ in } receiveValue: { error in
-        print(error)
+    .mapError { MyError.custom($0) }
+    .sink { completion in
+        if case .failure(let error) = completion {
+            print(error)
+        }
+    } receiveValue: { value in
+        print(value)
     }
 ```
 
@@ -185,120 +193,132 @@ class HomeViewModel: ObservableObject {
 
 ### Assign
 
+Both overloads require `Failure == Never` (use `replaceError`/`catch` first).
+
 ```swift
-// ✅ assign to property
+// ✅ assign(to:) - republish into an @Published property of the same class.
+// No AnyCancellable: lifetime is tied to the Published property.
 publisher
     .map(\.name)
-    .assign(to: &$viewModel.userName)
+    .assign(to: &$userName)
 
-// ✅ assign to KVO-compliant property
+// ✅ assign(to:on:) - write to any key path; returns AnyCancellable.
+// ⚠️ Strongly retains `on` - .assign(to: ..., on: self) creates a retain cycle;
+// use .sink { [weak self] ... } or assign(to: &$property) instead.
 publisher
     .map(\.text)
     .assign(to: \.text, on: label)
+    .store(in: &cancellables)
 ```
 
-## Subject Patterns
+## Debounced Search Pipeline
 
-### Behavior Subject Pattern
+`map` + `switchToLatest` (not `flatMap`) so a new query cancels the in-flight search — `flatMap` merges all in-flight requests and results can arrive out of order.
 
 ```swift
 class SearchViewModel: ObservableObject {
     @Published var searchText = ""
-    @Published var results: [Result] = []
-
-    private let searchSubject = PassthroughSubject<String, Never>()
-    private var cancellables = Set<AnyCancellable>()
+    @Published var results: [SearchResult] = []
 
     init() {
         $searchText
-            .debounce(for: .milliseconds(300), scheduler: RunLoop.main)
+            .debounce(for: .milliseconds(300), scheduler: DispatchQueue.main)
             .removeDuplicates()
-            .flatMap { query in
-                self.search(query)
+            .map { [unowned self] query in  // unowned: pipeline lifetime == self
+                search(query)
                     .catch { _ in Just([]) }
             }
+            .switchToLatest()
+            .receive(on: DispatchQueue.main)
             .assign(to: &$results)
     }
 
-    private func search(_ query: String) -> AnyPublisher<[Result], Never> {
+    private func search(_ query: String) -> AnyPublisher<[SearchResult], Error> {
         // Perform search
     }
 }
 ```
 
-## Custom Publishers
+## System Publishers
+
+Combine ships publishers for common sources — do not hand-roll them. A truly custom `Publisher` (with its own `Subscription`) is rarely needed; prefer a Subject you `send` into, or `Deferred { Future { ... } }` for callback APIs.
 
 ```swift
-// ✅ Publisher for notifications
-extension NotificationCenter {
-    func publisher(for name: Notification.Name, object: AnyObject? = nil) -> NotificationCenter.Publisher {
-        Publisher(center: self, name: name, object: object)
-    }
-
-    struct Publisher: Combine.Publisher {
-        typealias Output = Notification
-        typealias Failure = Never
-
-        let center: NotificationCenter
-        let name: Notification.Name
-        let object: AnyObject?
-
-        func receive<S>(subscriber: S) where S: Subscriber, Notification == S.Input, Never == S.Failure {
-            let subscription = Subscription(
-                subscriber: subscriber,
-                center: center,
-                name: name,
-                object: object
-            )
-            subscriber.receive(subscription: subscription)
-        }
-    }
-}
-
-// Usage
+// ✅ NotificationCenter (built-in)
 NotificationCenter.default
     .publisher(for: UIApplication.didBecomeActiveNotification)
-    .sink { notification in
-        print("App became active")
+    .sink { _ in print("App became active") }
+    .store(in: &cancellables)
+
+// ✅ Timer
+Timer.publish(every: 1, on: .main, in: .common)
+    .autoconnect()
+    .sink { date in print(date) }
+    .store(in: &cancellables)
+
+// ✅ URLSession
+URLSession.shared.dataTaskPublisher(for: url)
+    .map(\.data)
+    .decode(type: User.self, decoder: JSONDecoder())
+    .receive(on: DispatchQueue.main)
+    .sink { completion in
+        // handle .failure
+    } receiveValue: { user in
+        print(user)
     }
     .store(in: &cancellables)
 ```
 
 ## Memory Management
 
+A dropped `AnyCancellable` cancels the subscription immediately — never discard `sink`'s return value or hold it in a local variable.
+
 ```swift
 class ViewModel {
     private var cancellables = Set<AnyCancellable>()
+    private var single: AnyCancellable?
 
     func setup() {
-        // ✅ Store subscription
+        // ✅ Store in a set - cancelled when the owner deallocates
         publisher
             .sink { value in
                 print(value)
             }
             .store(in: &cancellables)
 
-        // ✅ Or use retain cycle
-        var cancellable: AnyCancellable? = publisher
+        // ✅ Or hold one cancellable; set to nil to cancel early
+        single = otherPublisher
             .sink { value in
                 print(value)
             }
-        // cancellable = nil when done
     }
 }
+```
+
+## Bridging to Swift Concurrency
+
+```swift
+// ✅ Every publisher exposes .values as an AsyncSequence
+for await value in viewModel.$searchText.values {
+    print(value)
+}
+
+// Failure != Never: iterate with `for try await`
 ```
 
 ## Testing
 
 ```swift
 func testPublisher_transformsValues() {
-    let publisher = [1, 2, 3].publisher
     var results: [Int] = []
 
-    publisher
+    let cancellable = [1, 2, 3].publisher
         .map { $0 * 2 }
         .sink { results.append($0) }
 
     XCTAssertEqual(results, [2, 4, 6])
+    cancellable.cancel()
 }
 ```
+
+For time-based operators (`debounce`, `delay`), inject the scheduler and use a test scheduler (e.g. pointfreeco/combine-schedulers) instead of waiting on real time.

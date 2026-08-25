@@ -60,7 +60,7 @@ fun SearchScreen() {
     var searchQuery by rememberSaveable { mutableStateOf("") }
     var isFilterExpanded by rememberSaveable { mutableStateOf(false) }
 
-    // For complex objects, use a custom Saver
+    // Non-Bundle-compatible collections need an explicit Saver
     val selectedFilters = rememberSaveable(
         saver = listSaver(
             save = { it.toList() },
@@ -68,8 +68,8 @@ fun SearchScreen() {
         )
     ) { mutableStateListOf<String>() }
 
-    // For Parcelable objects
-    var selectedProduct by rememberSaveable(stateSaver = autoSaver()) {
+    // Parcelable types are handled by the default autoSaver
+    var selectedProduct by rememberSaveable {
         mutableStateOf<Product?>(null)
     }
 
@@ -82,6 +82,17 @@ fun SearchScreen() {
     }
 }
 ```
+
+`rememberSaveable` writes into the saved-instance-state Bundle, so the value must
+be Bundle-compatible (primitives, `Parcelable`, or a custom `Saver`). For a
+`@Serializable` type prefer `rememberSerializable` (compose-runtime 1.9+, the
+renamed `KSerializer` overload): it goes through kotlinx-serialization and works
+in `commonMain`, where `@Parcelize` does not.
+
+For state that must survive Activity recreation but *not* process death — players,
+in-memory caches, non-serializable managers — use `retain { }` from
+`androidx.compose.runtime:runtime-retain` (Compose 1.10+). It returns the same
+(`===`) instance, unlike the saveable APIs which hand back a restored copy.
 
 ### Lifecycle-Aware Data Collection
 
@@ -141,15 +152,20 @@ fun AnalyticsScreen(screenName: String) {
 ### Process Death Testing
 
 ```bash
-# Kill the app process (simulates process death)
-adb shell am kill com.myapp.android
-
-# Full flow: put app in background, kill, then restore
+# `am kill` only kills processes "that are safe to kill" — a foregrounded app
+# is not, so backgrounding first is required or the command is a silent no-op.
 adb shell input keyevent KEYCODE_HOME
 adb shell am kill com.myapp.android
-# Now tap the app in recents to trigger restoration
+# Now tap the app in recents: the Activity is recreated with a non-null
+# savedInstanceState, restoring SavedStateHandle and rememberSaveable.
 
-# Enable "Don't keep activities" in Developer Options for aggressive testing
+# `am force-stop` kills unconditionally but discards the task's saved state,
+# so the relaunch is a cold start — use it to test cold start, not restoration.
+adb shell am force-stop com.myapp.android
+
+# "Don't keep activities" finishes the Activity but leaves the process alive:
+# it exercises Activity recreation, NOT process death (statics, singletons and
+# Application state all survive), so it cannot replace the `am kill` flow.
 adb shell settings put global always_finish_activities 1
 ```
 
@@ -159,11 +175,14 @@ adb shell settings put global always_finish_activities 1
 class SyncWorker(
     context: Context,
     params: WorkerParameters
-) : CoroutineWorker(context, params) {
+) : CoroutineWorker(context, params), KoinComponent {
+
+    // Koin: inject via KoinComponent (or use koin-androidx-workmanager's WorkerFactory).
+    // Hilt: annotate with @HiltWorker + @AssistedInject instead.
+    private val repository: SyncRepository by inject()
 
     override suspend fun doWork(): Result {
         return try {
-            val repository = EntryPoint.get(applicationContext).syncRepository()
             repository.syncPendingChanges()
             Result.success()
         } catch (e: Exception) {
@@ -180,8 +199,8 @@ fun schedulePeriodicSync(context: Context) {
         .build()
 
     val syncRequest = PeriodicWorkRequestBuilder<SyncWorker>(
-        repeatInterval = 1, TimeUnit.HOURS,
-        flexInterval = 15, TimeUnit.MINUTES
+        repeatInterval = 1, repeatIntervalTimeUnit = TimeUnit.HOURS,
+        flexTimeInterval = 15, flexTimeIntervalUnit = TimeUnit.MINUTES
     )
         .setConstraints(constraints)
         .setBackoffCriteria(BackoffPolicy.EXPONENTIAL, 30, TimeUnit.SECONDS)
@@ -197,6 +216,11 @@ fun schedulePeriodicSync(context: Context) {
 
 ### Foreground Service Pattern
 
+Since targetSdk 34, every FGS must declare a type in the manifest
+(`<service android:foregroundServiceType="dataSync" .../>` plus the matching
+`FOREGROUND_SERVICE_DATA_SYNC` permission) or `startForeground` throws
+`MissingForegroundServiceTypeException`:
+
 ```kotlin
 class UploadService : Service() {
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -206,9 +230,17 @@ class UploadService : Service() {
             .setProgress(100, 0, true)
             .build()
 
-        startForeground(NOTIFICATION_ID, notification)
+        ServiceCompat.startForeground(
+            this, NOTIFICATION_ID, notification,
+            ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC
+        )
         startUpload()
         return START_NOT_STICKY
+    }
+
+    // Android 15+ caps dataSync at 6h per 24h; the system then calls onTimeout
+    override fun onTimeout(startId: Int, fgsType: Int) {
+        stopSelf()
     }
 
     override fun onBind(intent: Intent?): IBinder? = null
@@ -218,6 +250,8 @@ class UploadService : Service() {
     }
 }
 ```
+
+Prefer WorkManager (expedited or `setForeground`) over a hand-rolled dataSync FGS for transfers that can tolerate deferral.
 
 ---
 
@@ -289,8 +323,10 @@ struct MyApp: App {
 
 ### Background Tasks (BGTaskScheduler)
 
+Prerequisites: add each identifier to `BGTaskSchedulerPermittedIdentifiers` in Info.plist and enable the Background Modes capability (`fetch` for BGAppRefreshTask, `processing` for BGProcessingTask). `register` returns `false` — it does not crash — for an identifier missing from the plist, so check the return value; submitting a task whose handler was never registered raises `NSInternalInconsistencyException` at runtime.
+
 ```swift
-// Register in AppDelegate or App init
+// Register before the app finishes launching (AppDelegate or App init)
 func registerBackgroundTasks() {
     BGTaskScheduler.shared.register(
         forTaskWithIdentifier: "com.myapp.refresh",
@@ -325,13 +361,16 @@ func handleAppRefresh(task: BGAppRefreshTask) {
         }
     }
 
+    // Set before/immediately after starting work — expiration can fire any time
     task.expirationHandler = {
         refreshTask.cancel()
     }
 }
 ```
 
-Test background tasks in the debugger:
+iOS 26+ adds `BGContinuedProcessingTask` for user-initiated work (exports, uploads) that continues after backgrounding, with system-surfaced progress UI — submit it only in direct response to a user action.
+
+Test on a physical device (BGTaskScheduler does not fire in the Simulator) — pause in the debugger and run:
 ```
 e -l objc -- (void)[[BGTaskScheduler sharedScheduler]
     _simulateLaunchForTaskWithIdentifier:@"com.myapp.refresh"]
@@ -348,20 +387,21 @@ e -l objc -- (void)[[BGTaskScheduler sharedScheduler]
 | UI state (scroll, tab) | `SavedStateHandle` | `@SceneStorage` | Yes |
 | Form input | `rememberSaveable` | `@SceneStorage` | Yes |
 | ViewModel data | Re-fetch on restore | Re-fetch on restore | No (re-load) |
-| User session | EncryptedPrefs | Keychain | Yes |
-| Cache | Room/DataStore | CoreData/UserDefaults | Yes |
+| User session | Keystore-backed storage (see mobile-security) | Keychain | Yes |
+| Cache | Room/DataStore | SwiftData/Core Data/UserDefaults | Yes |
+| Player, non-serializable manager | `retain { }` (Compose 1.10+) | `@State` on a root view | No (recreate) |
 
 ### Memory Pressure Handling
 
 ```kotlin
-// Android
+// Android — as of API 34 only UI_HIDDEN and BACKGROUND are still delivered;
+// the RUNNING_*/MODERATE/COMPLETE levels are deprecated
 class MyApplication : Application() {
     override fun onTrimMemory(level: Int) {
         super.onTrimMemory(level)
         when (level) {
-            TRIM_MEMORY_RUNNING_LOW -> ImageCache.trimToSize(50)
-            TRIM_MEMORY_RUNNING_CRITICAL -> ImageCache.evictAll()
-            TRIM_MEMORY_UI_HIDDEN -> releaseUIResources()
+            TRIM_MEMORY_UI_HIDDEN -> releaseUIResources()      // UI no longer visible
+            TRIM_MEMORY_BACKGROUND -> ImageCache.trimToSize(50) // process is cache-eligible
         }
     }
 }

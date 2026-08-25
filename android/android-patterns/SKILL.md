@@ -15,7 +15,8 @@ Modern Android patterns with Kotlin, coroutines, and functional programming.
 // ✅ Prefer val over var
 val name: String = "John"
 
-// ✅ Immutable collections
+// ✅ Read-only collection types (List/Set/Map are read-only, NOT immutable:
+// a MutableList held elsewhere can still change behind this reference)
 val items: List<Item> = listOf(item1, item2)
 
 // ✅ Data class with copy
@@ -30,7 +31,7 @@ val updatedUser = user.copy(name = "Jane")
 val length = name?.length
 
 // ✅ Elvis operator
-val name = nullableName ?: "Unknown"
+val displayName = nullableName ?: "Unknown"
 
 // ✅ let for null checks
 nullableUser?.let { user ->
@@ -48,7 +49,7 @@ fun processUser(user: User?) {
 
 ```kotlin
 // let - Transform and return
-val result = nullable?.let { transform(it) }
+val transformed = nullable?.let { transform(it) }
 
 // run - Configure and return result
 val result = service.run {
@@ -62,14 +63,15 @@ with(binding) {
     subtitle.text = "Subtitle"
 }
 
-// apply - Configure and return self
-val user = User().apply {
-    name = "John"
-    email = "john@example.com"
+// apply - Configure and return self (receiver must expose vars;
+// a data class of vals is configured with copy(), not apply)
+val intent = Intent(context, DetailActivity::class.java).apply {
+    putExtra(EXTRA_USER_ID, userId)
+    flags = Intent.FLAG_ACTIVITY_CLEAR_TOP
 }
 
 // also - Side effects, return self
-val user = User().also {
+val user = repository.createUser(name).also {
     logger.log("Created user: ${it.id}")
 }
 ```
@@ -137,9 +139,11 @@ fun HomeScreen(viewModel: HomeViewModel = koinViewModel()) {
 
 ```kotlin
 // ✅ Use Result for operations that can fail
+// ⚠️ runCatching also catches CancellationException — rethrow it,
+// or cancellation stops propagating through the coroutine hierarchy
 suspend fun fetchUser(id: String): Result<User> = runCatching {
     api.getUser(id).toDomain()
-}
+}.onFailure { if (it is CancellationException) throw it }
 
 // ✅ Chain operations
 repository.fetchUser(id)
@@ -159,6 +163,7 @@ suspend fun <T> retry(
 ): T {
     repeat(times - 1) {
         try { return block() }
+        catch (e: CancellationException) { throw e } // never swallow cancellation
         catch (e: Exception) { delay(1000) }
     }
     return block() // Last attempt
@@ -190,8 +195,16 @@ when (state) {
 ### Context Extensions
 
 ```kotlin
-fun Context.dp(value: Int): Int = 
-    (value * resources.displayMetrics.density).toInt()
+// dp -> px. Round, don't truncate: the platform's own conversion
+// (TypedValue.complexToDimensionPixelSize) rounds and never collapses a
+// non-zero dimension to 0 px, which `(value * density).toInt()` does at low density.
+// Needs kotlin.math.roundToInt.
+fun Context.dpToPx(value: Int): Int =
+    TypedValue.applyDimension(
+        TypedValue.COMPLEX_UNIT_DIP,
+        value.toFloat(),
+        resources.displayMetrics,
+    ).roundToInt()
 
 fun Context.showToast(message: String) {
     Toast.makeText(this, message, Toast.LENGTH_SHORT).show()
@@ -200,10 +213,12 @@ fun Context.showToast(message: String) {
 
 ### String Resources
 
-```kotlin
-// strings.xml
+```xml
+<!-- strings.xml -->
 <string name="welcome_message">Welcome, %1$s!</string>
+```
 
-// Usage
+```kotlin
+// Compose
 stringResource(R.string.welcome_message, userName)
 ```

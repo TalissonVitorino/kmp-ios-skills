@@ -25,7 +25,7 @@ of which layouts are suitable for each API:
 
 | Component | Purpose |
 |---|---|
-| `LazyVerticalGrid`, `LazyStaggeredGrid`, `LazyHorizontalGrid` | Visualization of large, homogeneous data sets that requires lazy loading. |
+| `LazyVerticalGrid`, `LazyStaggeredGrid`, `LazyHorizontalGrid` | Visualization of large, homogeneous data sets that require lazy loading. |
 | `Row`, `Column`, `FlexBox` | One-dimensional layout |
 | `Grid` | Two-dimensional layout |
 

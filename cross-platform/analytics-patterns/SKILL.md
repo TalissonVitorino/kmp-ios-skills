@@ -54,6 +54,8 @@ class AnalyticsManager(
         if (!consentManager.hasAnalyticsConsent()) return
         providers.forEach { it.logScreenView(screenName, screenClass) }
     }
+
+    fun logEvent(event: AnalyticsEvent) = logEvent(event.name, event.params)
 }
 ```
 
@@ -75,15 +77,15 @@ sealed class AnalyticsEvent(
         params = mapOf("product_id" to productId, "price" to price, "quantity" to quantity)
     )
 
-    class Purchase(orderId: String, total: Double, currency: String) : AnalyticsEvent(
+    class Purchase(transactionId: String, value: Double, currency: String) : AnalyticsEvent(
         name = "purchase",
-        params = mapOf("order_id" to orderId, "total" to total, "currency" to currency)
+        params = mapOf("transaction_id" to transactionId, "value" to value, "currency" to currency)
     )
 
     // Engagement
     class Search(query: String, resultCount: Int) : AnalyticsEvent(
         name = "search",
-        params = mapOf("query" to query, "result_count" to resultCount)
+        params = mapOf("search_term" to query, "result_count" to resultCount)
     )
 
     class ShareContent(contentType: String, itemId: String) : AnalyticsEvent(
@@ -95,6 +97,8 @@ sealed class AnalyticsEvent(
 // Usage
 analytics.logEvent(AnalyticsEvent.ViewProduct("sku-123", "electronics"))
 ```
+
+`add_to_cart`, `purchase`, and `search` are Firebase predefined events — keep their standard parameter names (`value`, `currency`, `transaction_id`, `search_term`) or built-in reports (revenue, e-commerce funnels) will not populate. `view_product` and `share_content` above are custom names; the predefined equivalents are `view_item` and `share` (params `content_type`, `item_id`, `method`). The full e-commerce schema additionally expects an `items` array (`FirebaseAnalytics.Param.ITEMS`, a `Bundle[]` capped at 200 entries).
 
 ---
 
@@ -109,12 +113,13 @@ class FirebaseAnalyticsProvider(context: Context) : AnalyticsProvider {
     override fun logEvent(name: String, params: Map<String, Any>) {
         val bundle = Bundle().apply {
             params.forEach { (key, value) ->
+                // Bundle params accept String, Long, Double, Bundle, and Bundle[] (ITEMS) only
                 when (value) {
                     is String -> putString(key, value)
-                    is Int -> putInt(key, value)
+                    is Int -> putLong(key, value.toLong())
                     is Long -> putLong(key, value)
                     is Double -> putDouble(key, value)
-                    is Boolean -> putBoolean(key, value)
+                    is Boolean -> putLong(key, if (value) 1L else 0L)
                 }
             }
         }
@@ -142,17 +147,11 @@ class FirebaseAnalyticsProvider(context: Context) : AnalyticsProvider {
 ### Screen Tracking with Lifecycle Observer
 
 ```kotlin
+// androidx.lifecycle:lifecycle-runtime-compose
 @Composable
 fun TrackScreen(screenName: String, analytics: AnalyticsManager) {
-    val lifecycleOwner = LocalLifecycleOwner.current
-    DisposableEffect(lifecycleOwner) {
-        val observer = LifecycleEventObserver { _, event ->
-            if (event == Lifecycle.Event.ON_RESUME) {
-                analytics.logScreenView(screenName)
-            }
-        }
-        lifecycleOwner.lifecycle.addObserver(observer)
-        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
+    LifecycleEventEffect(Lifecycle.Event.ON_RESUME) {
+        analytics.logScreenView(screenName)
     }
 }
 
@@ -163,6 +162,8 @@ fun ProductListScreen(analytics: AnalyticsManager) {
     // Screen content...
 }
 ```
+
+Firebase also collects `screen_view` automatically (per Activity on Android, per UIViewController on iOS), so manual logging double-counts. Disable automatic reporting when you log screens yourself: `<meta-data android:name="google_analytics_automatic_screen_reporting_enabled" android:value="false" />` in `<application>`, and `FirebaseAutomaticScreenReportingEnabled = NO` (Boolean) in `Info.plist`.
 
 ---
 
@@ -185,10 +186,10 @@ final class FirebaseAnalyticsProvider: AnalyticsProvider {
     }
 
     func logScreenView(screenName: String, screenClass: String?) {
-        Analytics.logEvent(AnalyticsEventScreenView, parameters: [
-            AnalyticsParameterScreenName: screenName,
-            AnalyticsParameterScreenClass: screenClass ?? ""
-        ])
+        // Omit screen_class when nil — an empty string is an invalid param value
+        var parameters: [String: Any] = [AnalyticsParameterScreenName: screenName]
+        if let screenClass { parameters[AnalyticsParameterScreenClass] = screenClass }
+        Analytics.logEvent(AnalyticsEventScreenView, parameters: parameters)
     }
 }
 ```
@@ -233,7 +234,8 @@ func requestTrackingPermission() async -> ATTrackingManager.AuthorizationStatus 
     await ATTrackingManager.requestTrackingAuthorization()
 }
 
-// Call after app launch delay (Apple requirement)
+// Requires NSUserTrackingUsageDescription in Info.plist.
+// Call while the app is in the .active state — iOS silently skips the prompt otherwise.
 func onAppBecomeActive() {
     Task {
         let status = await requestTrackingPermission()
@@ -262,11 +264,11 @@ func onAppBecomeActive() {
 | `feature_action` | `search_performed` | Feature-scoped |
 | `screen_action` | `settings_opened` | Screen-scoped |
 
-Rules:
-- Use `snake_case` consistently
-- Max 40 characters per event name
-- Max 25 custom parameters per event
-- Prefix custom events to avoid Firebase reserved names
+Firebase limits (an offending value is dropped and replaced with a `firebase_error` param — no exception is thrown):
+- Use `snake_case`; names start with a letter, alphanumerics + underscores only
+- Max 40 characters per event/parameter name; parameter values max 100 characters
+- Max 25 parameters per event; 500 distinctly named events per app instance; 25 user properties per project (property name max 24 chars, value max 36 chars)
+- Reserved prefixes `firebase_`, `google_`, `ga_` are rejected; automatically collected event names (`first_open`, `app_remove`, ...) cannot be logged manually
 
 ## User Property Design
 
@@ -284,7 +286,10 @@ Properties should be low-cardinality (not unique per user). Use for segmentation
 ## Privacy: Consent Management
 
 ```kotlin
-class ConsentManager(private val prefs: SharedPreferences) {
+class ConsentManager(
+    private val prefs: SharedPreferences,
+    private val firebaseAnalytics: FirebaseAnalytics
+) {
     fun hasAnalyticsConsent(): Boolean = prefs.getBoolean("analytics_consent", false)
     fun hasAdConsent(): Boolean = prefs.getBoolean("ad_consent", false)
 
@@ -293,10 +298,32 @@ class ConsentManager(private val prefs: SharedPreferences) {
             .putBoolean("analytics_consent", analytics)
             .putBoolean("ad_consent", ads)
             .apply()
-        // Disable Firebase collection if consent revoked
-        FirebaseAnalytics.getInstance(context).setAnalyticsCollectionEnabled(analytics)
+        // Consent Mode v2 — all four types; persists across app runs
+        firebaseAnalytics.setConsent(
+            mapOf(
+                FirebaseAnalytics.ConsentType.ANALYTICS_STORAGE to analytics.toStatus(),
+                FirebaseAnalytics.ConsentType.AD_STORAGE to ads.toStatus(),
+                FirebaseAnalytics.ConsentType.AD_USER_DATA to ads.toStatus(),
+                FirebaseAnalytics.ConsentType.AD_PERSONALIZATION to ads.toStatus()
+            )
+        )
+        // Hard kill-switch for all collection when analytics consent is revoked
+        firebaseAnalytics.setAnalyticsCollectionEnabled(analytics)
     }
+
+    private fun Boolean.toStatus() =
+        if (this) FirebaseAnalytics.ConsentStatus.GRANTED
+        else FirebaseAnalytics.ConsentStatus.DENIED
 }
+```
+
+Set consent defaults to denied before any code runs, in `AndroidManifest.xml`:
+
+```xml
+<meta-data android:name="google_analytics_default_allow_analytics_storage" android:value="false" />
+<meta-data android:name="google_analytics_default_allow_ad_storage" android:value="false" />
+<meta-data android:name="google_analytics_default_allow_ad_user_data" android:value="false" />
+<meta-data android:name="google_analytics_default_allow_ad_personalization_signals" android:value="false" />
 ```
 
 GDPR/CCPA checklist:

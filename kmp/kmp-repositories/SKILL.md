@@ -10,37 +10,15 @@ Implement the repository pattern with shared interfaces in `commonMain` and plat
 ## Architecture Overview
 
 ```
-┌─────────────────────────────────────────────────────────┐
-│                    Presentation Layer                    │
-│              (ViewModels, Composables, SwiftUI)          │
-└──────────────────────────┬──────────────────────────────┘
-                           │
-┌──────────────────────────▼──────────────────────────────┐
-│                    Domain Layer                          │
-│                    (Use Cases)                           │
-└──────────────────────────┬──────────────────────────────┘
-                           │
-┌──────────────────────────▼──────────────────────────────┐
-│                    Data Layer                            │
-│  ┌──────────────────────────────────────────────────┐   │
-│  │         Repository Interface (commonMain)         │   │
-│  └──────────────────────┬───────────────────────────┘   │
-│                         │                               │
-│  ┌──────────────────────▼───────────────────────────┐   │
-│  │      Repository Implementation (commonMain)      │   │
-│  │  - Coordinates data sources                      │   │
-│  │  - Caching strategy                              │   │
-│  │  - Error mapping                                 │   │
-│  └──────────────────────┬───────────────────────────┘   │
-│                         │                               │
-│  ┌──────────────────────▼───────────────────────────┐   │
-│  │              Data Sources                        │   │
-│  │  ┌────────────┐  ┌────────────┐  ┌───────────┐  │   │
-│  │  │   Remote   │  │   Local    │  │   Memory  │  │   │
-│  │  │ (Network)  │  │ (Database) │  │  (Cache)  │  │   │
-│  │  └────────────┘  └────────────┘  └───────────┘  │   │
-│  └───────────────────────────────────────────────────┘   │
-└───────────────────────────────────────────────────────────┘
+Presentation   ViewModels · Composables · SwiftUI
+     ↓
+Domain         use cases
+     ↓
+Data           Repository interface        (commonMain)
+               Repository implementation   (commonMain: coordinates sources,
+                                            caching strategy, error mapping)
+               Data sources                Remote (network) · Local (database)
+                                           · Memory (cache)
 ```
 
 ## Repository Interface
@@ -65,12 +43,18 @@ interface UserRepository {
 }
 ```
 
+`kotlin.Result` is an inline value class, and the Kotlin/Native Objective-C export maps
+inline classes to their underlying type or `id` — Swift cannot unwrap one. Keep `Result`
+inside shared code and convert at the iOS boundary (sealed wrapper, or a shared ViewModel
+exposing state): see `error-handling-result` and `kmp-ios-integration`.
+
 ## Base Repository
 
 ```kotlin
 // commonMain/kotlin/data/repository/BaseRepository.kt
 abstract class BaseRepository {
-    // Execute with error handling
+    // Execute with error handling.
+    // NetworkException/DataException are app-defined error types.
     protected suspend fun <T> execute(
         block: suspend () -> T
     ): Result<T> = try {
@@ -83,51 +67,32 @@ abstract class BaseRepository {
         Result.failure(DataException(cause = e))
     }
 
-    // Flow with error handling
+    // Wrap a Flow's emissions in Result. Use the .catch operator — a
+    // try/catch around collect inside a flow {} builder violates flow
+    // exception transparency and can throw IllegalStateException at runtime.
     protected fun <T> flowResult(
-        block: suspend () -> Flow<T>
-    ): Flow<Result<T>> = flow {
-        try {
-            block().collect { emit(Result.success(it)) }
-        } catch (e: CancellationException) {
-            throw e
-        } catch (e: Exception) {
-            emit(Result.failure(e))
-        }
-    }
+        block: () -> Flow<T>
+    ): Flow<Result<T>> = block()
+        .map { Result.success(it) }
+        .catch { e -> emit(Result.failure(e)) }
 
-    // Cache-first strategy
+    // Cache-first strategy: return cache hit, otherwise fetch and persist
     protected suspend fun <T> cacheFirst(
-        cacheKey: String,
-        ttl: Duration,
         cacheBlock: suspend () -> T?,
-        networkBlock: suspend () -> T
+        networkBlock: suspend () -> T,
+        saveBlock: suspend (T) -> Unit
     ): Result<T> = execute {
-        // Try cache
-        cacheBlock()?.let { return@execute it }
-
-        // Fetch from network
-        val result = networkBlock()
-
-        // Update cache
-        // saveToCache(cacheKey, result)
-
-        result
+        cacheBlock() ?: networkBlock().also { saveBlock(it) }
     }
 
-    // Network-first strategy
+    // Network-first strategy: fall back to cache only on network errors
     protected suspend fun <T> networkFirst(
-        cacheKey: String,
         cacheBlock: suspend () -> T?,
         networkBlock: suspend () -> T
     ): Result<T> = execute {
         try {
-            // Try network first
-            val result = networkBlock()
-            // Update cache
-            result
+            networkBlock()
         } catch (e: NetworkException) {
-            // Fall back to cache
             cacheBlock() ?: throw e
         }
     }
@@ -148,17 +113,19 @@ abstract class BaseRepository {
 
 ```kotlin
 // commonMain/kotlin/data/repository/UserRepositoryImpl.kt
+// Main-safety belongs in the data sources (see UserLocalDataSourceImpl below),
+// not here — the repository just coordinates them.
+// MemoryCache is app-defined: get<T>(key) / put / remove / clear.
 class UserRepositoryImpl(
     private val remoteDataSource: UserRemoteDataSource,
     private val localDataSource: UserLocalDataSource,
-    private val memoryCache: MemoryCache,
-    private val dispatcher: CoroutineDispatcher = PlatformDispatchers.io
+    private val memoryCache: MemoryCache
 ) : BaseRepository(), UserRepository {
 
     override suspend fun getUser(id: String): Result<User> =
         networkFirst(
-            cacheKey = "user:$id",
-            cacheBlock = { localDataSource.getUser(id) },
+            // read the memory tier too — otherwise the puts below are dead writes
+            cacheBlock = { memoryCache.get<User>("user:$id") ?: localDataSource.getUser(id) },
             networkBlock = { remoteDataSource.getUser(id).also { user ->
                 localDataSource.saveUser(user)
                 memoryCache.put("user:$id", user)
@@ -259,35 +226,56 @@ interface UserLocalDataSource {
     fun observeAllUsers(): Flow<List<User>>
 }
 
+// SQLDelight 2.x (current 2.3.2). asFlow/mapToList/mapToOneOrNull come from
+// app.cash.sqldelight:coroutines-extensions — 2.x requires the explicit
+// CoroutineContext argument. Dispatchers.IO exists on JVM/Native only (coroutines
+// `concurrent` source set, since 1.7), so it resolves from commonMain in an
+// Android+iOS project but vanishes if you add a js/wasmJs target — inject the
+// dispatcher (as below) instead of hardcoding it at call sites.
 class UserLocalDataSourceImpl(
-    private val database: AppDatabase
+    private val database: AppDatabase,
+    private val dispatcher: CoroutineDispatcher = Dispatchers.IO
 ) : UserLocalDataSource {
-    override suspend fun getUser(id: String): User? =
-        database.userQueries().getById(id).executeAsOneOrNull()?.toDomain()
+    private val queries get() = database.userQueries  // generated property, not a function
 
-    override suspend fun getAllUsers(): List<User> =
-        database.userQueries().getAll().executeAsList().map { it.toDomain() }
+    override suspend fun getUser(id: String): User? = withContext(dispatcher) {
+        queries.getById(id).executeAsOneOrNull()?.toDomain()
+    }
 
-    override suspend fun saveUser(user: User) =
-        database.userQueries().insert(user.toEntity())
+    override suspend fun getAllUsers(): List<User> = withContext(dispatcher) {
+        queries.getAll().executeAsList().map { it.toDomain() }
+    }
 
-    override suspend fun saveUsers(users: List<User>) =
-        database.transaction {
-            users.forEach { saveUser(it) }
+    override suspend fun saveUser(user: User) = withContext(dispatcher) {
+        queries.insert(user.toEntity())
+    }
+
+    override suspend fun saveUsers(users: List<User>) = withContext(dispatcher) {
+        // transaction {} takes a non-suspending lambda — call generated
+        // query methods directly inside it, not suspend functions
+        queries.transaction {
+            users.forEach { queries.insert(it.toEntity()) }
         }
+    }
 
-    override suspend fun deleteUser(id: String) =
-        database.userQueries().deleteById(id)
+    override suspend fun deleteUser(id: String) = withContext(dispatcher) {
+        queries.deleteById(id)
+    }
 
-    override suspend fun clearAll() =
-        database.userQueries().deleteAll()
+    override suspend fun clearAll() = withContext(dispatcher) {
+        queries.deleteAll()
+    }
 
     override fun observeUser(id: String): Flow<User> =
-        database.userQueries().getById(id).asFlow().map { it.executeAsOneOrNull()?.toDomain() }
-        .filterNotNull()
+        queries.getById(id).asFlow()
+            .mapToOneOrNull(dispatcher)
+            .filterNotNull()
+            .map { it.toDomain() }
 
     override fun observeAllUsers(): Flow<List<User>> =
-        database.userQueries().getAll().asFlow().map { it.executeAsList().map { entity -> entity.toDomain() } }
+        queries.getAll().asFlow()
+            .mapToList(dispatcher)
+            .map { rows -> rows.map { it.toDomain() } }
 }
 ```
 
@@ -328,7 +316,7 @@ val dataModule = module {
     single { UserApi(get()) }
     single<UserRemoteDataSource> { UserRemoteDataSourceImpl(get()) }
 
-    // Local data source
+    // Local data source (DriverFactory comes from a platform module — see kmp-di)
     single { createDatabase(get()) }
     single<UserLocalDataSource> { UserLocalDataSourceImpl(get()) }
 
@@ -345,82 +333,87 @@ val dataModule = module {
 }
 ```
 
-## Platform-Specific Database
+## Platform-Specific Database Driver
+
+SQLDelight shares the generated `AppDatabase` in `commonMain`; only the driver is per-platform:
 
 ```kotlin
-// commonMain/kotlin/database/DatabaseFactory.kt
-expect class DatabaseFactory {
-    fun create(): AppDatabase
+// commonMain/kotlin/database/DriverFactory.kt
+expect class DriverFactory {
+    fun createDriver(): SqlDriver
 }
 
-// Android implementation
-actual class DatabaseFactory(private val context: Context) {
-    actual fun create(): AppDatabase =
-        Room.databaseBuilder(
-            context,
-            AppDatabase::class.java,
-            "app.db"
-        ).build()
+fun createDatabase(driverFactory: DriverFactory): AppDatabase =
+    AppDatabase(driverFactory.createDriver())
+
+// androidMain — app.cash.sqldelight:android-driver
+actual class DriverFactory(private val context: Context) {
+    actual fun createDriver(): SqlDriver =
+        AndroidSqliteDriver(AppDatabase.Schema, context, "app.db")
 }
 
-// iOS implementation
-actual class DatabaseFactory {
-    actual fun create(): AppDatabase {
-        val dbPath = NSSearchPathForDirectoriesInDomains(
-            NSDocumentDirectory,
-            NSUserDomainMask,
-            true
-        ).first() as String
-        return AppDatabase("$dbPath/app.db")
-    }
+// iosMain — app.cash.sqldelight:native-driver
+actual class DriverFactory {
+    actual fun createDriver(): SqlDriver =
+        NativeSqliteDriver(AppDatabase.Schema, "app.db")
 }
 ```
 
+Room (KMP-capable since 2.7.0; current 2.8.3) is the alternative. Deeper coverage: `sqldelight-patterns`, `room-patterns`.
+
 ## Repository Testing
+
+MockK is JVM-only — it cannot be used in `commonTest` when the tests also run on iOS/native targets. Use hand-written fakes. Also use camelCase test names: backticked names with spaces don't compile on Kotlin/Native.
 
 ```kotlin
 // commonTest/kotlin/data/repository/UserRepositoryTest.kt
+class FakeUserRemoteDataSource : UserRemoteDataSource {
+    var user: User? = null
+    var shouldFail = false
+    override suspend fun getUser(id: String): User {
+        if (shouldFail) throw NetworkException()
+        return requireNotNull(user)
+    }
+    // remaining members omitted
+}
+
+class FakeUserLocalDataSource : UserLocalDataSource {
+    private val users = MutableStateFlow<Map<String, User>>(emptyMap())
+    override suspend fun getUser(id: String) = users.value[id]
+    override suspend fun saveUser(user: User) {
+        users.update { it + (user.id to user) }
+    }
+    override fun observeUser(id: String): Flow<User> =
+        users.map { it[id] }.filterNotNull().distinctUntilChanged()
+    // remaining members omitted
+}
+
 class UserRepositoryTest {
-    private lateinit var repository: UserRepository
-    private lateinit var mockRemote: UserRemoteDataSource
-    private lateinit var mockLocal: UserLocalDataSource
+    private val remote = FakeUserRemoteDataSource()
+    private val local = FakeUserLocalDataSource()
+    private val repository = UserRepositoryImpl(remote, local, MemoryCache())
 
-    @BeforeTest
-    fun setup() {
-        mockRemote = mockk()
-        mockLocal = mockk()
-        repository = UserRepositoryImpl(
-            remoteDataSource = mockRemote,
-            localDataSource = mockLocal,
-            memoryCache = MemoryCache()
-        )
+    @Test
+    fun fetchesFromNetworkAndWritesThroughToCache() = runTest {
+        val user = User(id = "123", name = "John")
+        remote.user = user
+
+        val result = repository.getUser("123")
+
+        assertEquals(user, result.getOrNull())
+        assertEquals(user, local.getUser("123"))
     }
 
     @Test
-    fun `returns cached user when available`() = runTest {
-        val cachedUser = User(id = "123", name = "John")
-        coEvery { mockLocal.getUser("123") } returns cachedUser
+    fun fallsBackToCacheWhenNetworkFails() = runTest {
+        val cached = User(id = "123", name = "John")
+        local.saveUser(cached)
+        remote.shouldFail = true
 
         val result = repository.getUser("123")
 
         assertTrue(result.isSuccess)
-        assertEquals(cachedUser, result.getOrNull())
-        coVerify { mockRemote wasNot Called }
-    }
-
-    @Test
-    fun `fetches from network when cache empty`() = runTest {
-        val networkUser = User(id = "123", name = "John")
-        coEvery { mockLocal.getUser("123") } returns null
-        coEvery { mockRemote.getUser("123") } returns networkUser
-        coEvery { mockLocal.saveUser(any()) } just Runs
-
-        val result = repository.getUser("123")
-
-        assertTrue(result.isSuccess)
-        assertEquals(networkUser, result.getOrNull())
-        coVerify { mockRemote.getUser("123") }
-        coVerify { mockLocal.saveUser(networkUser) }
+        assertEquals(cached, result.getOrNull())
     }
 }
 ```

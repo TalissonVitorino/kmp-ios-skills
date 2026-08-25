@@ -60,7 +60,10 @@ withContext(Dispatchers.Default) {
 private val _state = MutableStateFlow(HomeState())
 val state: StateFlow<HomeState> = _state.asStateFlow()
 
-// SharedFlow for events
+// SharedFlow for events (replay=0: emissions with no active
+// collector are dropped — extraBufferCapacity does NOT save them,
+// it only buffers for slow existing subscribers; for must-deliver
+// events use Channel(BUFFERED).receiveAsFlow() instead)
 private val _events = MutableSharedFlow<Event>()
 val events: SharedFlow<Event> = _events.asSharedFlow()
 
@@ -78,7 +81,7 @@ flow
     .filter { it.isActive }
     .map { transform(it) }
     .distinctUntilChanged()
-    .debounce(300)
+    .debounce(300)  // still @FlowPreview: needs @OptIn(FlowPreview::class)
     .catch { emit(fallback) }
     .collect { process(it) }
 ```
@@ -86,13 +89,16 @@ flow
 ## Error Handling
 
 ```kotlin
-// Try-catch in coroutine
+// Try-catch in coroutine (same _state: MutableStateFlow<HomeState> as above;
+// don't name a state subtype `Error` — kotlin.Error is a default import and
+// `Error(e.message)` silently resolves to the Throwable)
 viewModelScope.launch {
     try {
-        val result = repository.fetchData()
-        _state.value = Success(result)
+        _state.value = HomeState(data = repository.fetchData())
+    } catch (e: CancellationException) {
+        throw e  // Never swallow cancellation
     } catch (e: Exception) {
-        _state.value = Error(e.message)
+        _state.value = HomeState(error = e.message)
     }
 }
 
@@ -101,15 +107,23 @@ supervisorScope {
     launch { task1() }  // Failure doesn't cancel task2
     launch { task2() }
 }
+
+// CoroutineExceptionHandler - last-resort logging for uncaught
+// exceptions in launch. Only effective on root coroutines (or
+// supervisorScope children); async surfaces failures via await().
+val handler = CoroutineExceptionHandler { _, e -> log(e) }
+scope.launch(handler) { risky() }
 ```
 
 ## Cancellation
 
 ```kotlin
-// Cooperative cancellation
+// Cooperative cancellation in CPU-bound loops
 suspend fun processItems(items: List<Item>) {
     items.forEach { item ->
-        ensureActive()  // Check cancellation
+        // Bare ensureActive() needs a CoroutineScope receiver;
+        // in a plain suspend fun use the context extension:
+        coroutineContext.ensureActive()
         process(item)
     }
 }

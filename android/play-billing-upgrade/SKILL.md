@@ -1,5 +1,5 @@
 ---
-name: play-billing-upgrade
+name: play-billing-library-version-upgrade
 description: Use this skill when upgrading or migrating an Android project from any
   legacy Google Play Billing Library (PBL) version to the latest stable version of
   PBL.

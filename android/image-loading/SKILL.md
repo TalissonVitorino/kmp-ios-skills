@@ -34,6 +34,9 @@ AsyncImage(
 
 ### SubcomposeAsyncImage for Custom States
 
+Uses subcomposition - avoid it in LazyColumn/LazyRow rows; there, use `AsyncImage`
+with `placeholder`/`error` painters instead.
+
 ```kotlin
 SubcomposeAsyncImage(
     model = user.avatarUrl,
@@ -42,7 +45,9 @@ SubcomposeAsyncImage(
         .size(64.dp)
         .clip(CircleShape)
 ) {
-    when (painter.state) {
+    // Coil 3: painter.state is a StateFlow, not a snapshot property
+    val state by painter.state.collectAsState()
+    when (state) {
         is AsyncImagePainter.State.Loading -> {
             ShimmerBox(modifier = Modifier.fillMaxSize())
         }
@@ -90,13 +95,18 @@ AsyncImage(
         .transformations(
             CircleCropTransformation(),
             // or RoundedCornersTransformation(16f)
-            // or BlurTransformation(LocalContext.current, radius = 25f)
+            // BlurTransformation was removed from Coil in 2.0 - write a custom
+            // Transformation if needed
         )
         .build(),
     contentDescription = "Avatar",
     modifier = Modifier.size(48.dp)
 )
 ```
+
+Transformations re-encode the bitmap and extend the memory cache key. In
+Compose, prefer `Modifier.clip(CircleShape)` / `clip(RoundedCornerShape(r))`
+for plain shape clipping - it is free at draw time.
 
 ### Custom ImageLoader Configuration
 
@@ -116,9 +126,14 @@ val imageLoader = ImageLoader.Builder(context)
             .maxSizeBytes(100L * 1024 * 1024) // 100 MB
             .build()
     }
-    .respectCacheHeaders(true)
     .build()
 ```
+
+Coil 3 ignores `Cache-Control` headers by default and caches every response
+(`respectCacheHeaders` was removed). To honor them, add
+`io.coil-kt.coil3:coil-network-cache-control` and register
+`OkHttpNetworkFetcherFactory(cacheStrategy = { CacheControlCacheStrategy() })`
+in the component registry (requires coreLibraryDesugaring when minSdk <= 25).
 
 ### Coil + Koin Integration
 
@@ -142,9 +157,18 @@ val imageModule = module {
     }
 }
 
-// In Application.onCreate or Compose root
-setSingletonImageLoaderFactory { context ->
-    get<ImageLoader>() // from Koin
+// Option A - Application provides the singleton (called lazily on first load):
+class MyApp : Application(), SingletonImageLoader.Factory, KoinComponent {
+    override fun newImageLoader(context: PlatformContext): ImageLoader = get()
+}
+
+// Option B - at the Compose root (setSingletonImageLoaderFactory is @Composable;
+// resolve from Koin outside the factory lambda):
+@Composable
+fun App() {
+    val imageLoader = koinInject<ImageLoader>()
+    setSingletonImageLoaderFactory { imageLoader }
+    // ...
 }
 ```
 
@@ -193,14 +217,18 @@ AsyncImage(url: URL(string: article.imageUrl)) { phase in
 ### Custom Async Image Loader with Caching
 
 ```swift
-@Observable
-class ImageCache {
+enum ImageError: Error { case decodingFailed }
+
+// @unchecked Sendable: NSCache and URLSession are thread-safe, and there is no
+// other mutable state. Without it `static let shared` is an error in Swift 6
+// language mode ("static property is not concurrency-safe").
+final class ImageCache: @unchecked Sendable {
     static let shared = ImageCache()
 
     private let cache = NSCache<NSString, UIImage>()
     private let session = URLSession.shared
 
-    init() {
+    private init() {
         cache.countLimit = 100
         cache.totalCostLimit = 50 * 1024 * 1024 // 50 MB
     }
@@ -248,11 +276,13 @@ struct CachedAsyncImage: View {
                     .foregroundStyle(.secondary)
             }
         }
-        .task {
+        // task(id:) re-runs the load when the url changes (plain .task would not)
+        .task(id: url) {
             guard let url else {
                 isLoading = false
                 return
             }
+            isLoading = true
             do {
                 image = try await ImageCache.shared.image(for: url)
             } catch {
@@ -315,7 +345,7 @@ fun ImageErrorState(
     ) {
         Column(horizontalAlignment = Alignment.CenterHorizontally) {
             Icon(
-                imageVector = Icons.Default.BrokenImage,
+                imageVector = Icons.Default.BrokenImage, // needs material-icons-extended
                 contentDescription = "Failed to load image",
                 tint = MaterialTheme.colorScheme.onSurfaceVariant
             )
@@ -377,7 +407,6 @@ fun Avatar(url: String?, size: Dp = 48.dp) {
         model = ImageRequest.Builder(LocalContext.current)
             .data(url)
             .crossfade(true)
-            .transformations(CircleCropTransformation())
             .build(),
         contentDescription = "User avatar",
         placeholder = painterResource(R.drawable.avatar_placeholder),
@@ -411,6 +440,9 @@ fun CardImage(url: String?, modifier: Modifier = Modifier) {
 - Downsample images to the display size; never load a 4000px image into a 200dp view.
 - Use `ContentScale.Crop` for fixed-size containers, `ContentScale.Fit` for flexible ones.
 - Preload images for items about to scroll into view in lists.
-- Clear caches on low-memory warnings (`onTrimMemory` / `didReceiveMemoryWarning`).
+- Android: prefer `ImageLoader.Builder.memoryCacheMaxSizePercentWhileInBackground(0.5)`
+  (Coil 3.3+) over hand-rolled `onTrimMemory` handling. iOS: `NSCache` already evicts
+  under memory pressure; observe `UIApplication.didReceiveMemoryWarningNotification`
+  (not the UIViewController `didReceiveMemoryWarning` override) if you cache elsewhere.
 - For lists, set explicit sizes on image composables to prevent layout jumps during load.
 - Use shimmer effects instead of spinner placeholders for a more polished loading experience.

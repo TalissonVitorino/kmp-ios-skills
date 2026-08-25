@@ -10,7 +10,7 @@ Modern HTTP client for Kotlin.
 ## Dependencies
 
 ```kotlin
-val ktor = "3.5.0"   // current 3.x — verify latest at ktor.io/docs/releases
+val ktor = "3.5.2"   // current 3.x — verify latest at ktor.io/docs/releases
 dependencies {
     implementation("io.ktor:ktor-client-core:$ktor")
     implementation("io.ktor:ktor-client-okhttp:$ktor")
@@ -43,8 +43,12 @@ val httpClient = HttpClient(OkHttp) {
     
     // Logging (debug only)
     install(Logging) {
-        logger = Logger.ANDROID
+        logger = Logger.ANDROID   // import io.ktor.client.plugins.logging.ANDROID — writes to Logcat when no
+                                  // SLF4J provider is on the classpath (falls back to Logger.DEFAULT if one is),
+                                  // and splits messages past Android's 4068-char log limit.
+                                  // Logger.DEFAULT alone is SLF4J-only and silently no-ops on Android.
         level = if (BuildConfig.DEBUG) LogLevel.BODY else LogLevel.NONE
+        sanitizeHeader { it == HttpHeaders.Authorization }   // don't log bearer tokens
     }
     
     // Default request config
@@ -113,21 +117,21 @@ class ApiException(
 
 suspend inline fun <reified T> HttpClient.safeRequest(
     block: HttpRequestBuilder.() -> Unit
-): Result<T> = runCatching {
+): Result<T> = try {
     val response = request(block)
-    
     if (response.status.isSuccess()) {
-        response.body<T>()
+        Result.success(response.body<T>())
     } else {
-        throw ApiException(
-            statusCode = response.status.value,
-            message = response.bodyAsText()
-        )
+        Result.failure(ApiException(response.status.value, response.bodyAsText()))
     }
+} catch (e: CancellationException) {
+    throw e   // never swallow coroutine cancellation (runCatching would)
+} catch (e: Exception) {
+    Result.failure(e)
 }
 
 // Usage
-class UserRepository(private val api: UserApi, private val client: HttpClient) {
+class UserRepository(private val client: HttpClient) {
     suspend fun getUser(id: String): Result<User> {
         return client.safeRequest<UserDto> {
             url("users/$id")
@@ -162,15 +166,16 @@ fun UserDto.toDomain(): User = User(
 
 ## Interceptors
 
+Static headers belong in `defaultRequest`. Plain retry/backoff belongs in the built-in `HttpRequestRetry` plugin (`retryOnServerErrors`, `exponentialDelay`, `retryIf`). Reach for `HttpSend` only for custom per-call logic around the response — it needs no `install()` and is configured on the built client via `plugin()`:
+
 ```kotlin
-val client = HttpClient(OkHttp) {
-    // Request interceptor
-    install(HttpSend) {
-        intercept { request ->
-            request.headers.append("X-Client-Version", BuildConfig.VERSION_NAME)
-            execute(request)
-        }
-    }
+val client = HttpClient(OkHttp) { /* ... */ }
+
+client.plugin(HttpSend).intercept { request ->
+    request.headers.append("X-Request-Id", newRequestId())   // per-call, so not defaultRequest
+    val call = execute(request)                              // must return an HttpClientCall
+    analytics.trackCall(request.url.buildString(), call.response.status.value)
+    call
 }
 ```
 

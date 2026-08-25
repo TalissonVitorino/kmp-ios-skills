@@ -30,7 +30,7 @@ fun Counter(
 // Parent owns state
 @Composable
 fun CounterScreen() {
-    var count by rememberSaveable { mutableStateOf(0) }
+    var count by rememberSaveable { mutableIntStateOf(0) }
     
     Counter(
         count = count,
@@ -42,19 +42,31 @@ fun CounterScreen() {
 ### Remember Variants
 
 ```kotlin
-// remember - Survives recomposition
-val alpha by remember { mutableStateOf(1f) }
+// remember - Survives recomposition. Use mutableIntStateOf/mutableFloatStateOf/
+// mutableLongStateOf/mutableDoubleStateOf for primitives (avoids autoboxing).
+var alpha by remember { mutableFloatStateOf(1f) }
 
-// rememberSaveable - Survives config change
-var count by rememberSaveable { mutableStateOf(0) }
+// rememberSaveable - Survives config change and process death (Bundle-storable
+// values automatically; anything else needs a Saver)
+var count by rememberSaveable { mutableIntStateOf(0) }
 
 // remember with key - Resets on key change
 val animation = remember(itemId) { Animatable(0f) }
 
-// derivedStateOf - Computed, updates only when result changes
+// derivedStateOf - Recomposes readers only when the RESULT changes.
+// Inputs must be snapshot State reads (here email/password are State-backed);
+// plain parameters won't trigger recalculation - use remember(param) instead.
 val isValid by remember {
     derivedStateOf { email.isNotBlank() && password.length >= 8 }
 }
+```
+
+### Collecting Flows
+
+```kotlin
+// androidx.lifecycle:lifecycle-runtime-compose
+// Stops collection when the UI is not visible (unlike collectAsState)
+val uiState by viewModel.uiState.collectAsStateWithLifecycle()
 ```
 
 ## Composition Patterns
@@ -62,6 +74,9 @@ val isValid by remember {
 ### Slot API
 
 ```kotlin
+// M3 TopAppBar itself is stable (material3 1.4.0) - no opt-in needed.
+// @OptIn(ExperimentalMaterial3Api::class) is still required if you pass a
+// scrollBehavior: TopAppBarScrollBehavior is experimental in 1.4.0.
 @Composable
 fun AppBar(
     title: @Composable () -> Unit,
@@ -111,12 +126,13 @@ fun CustomButton(
 ```kotlin
 @Composable
 fun HomeScreen(viewModel: HomeViewModel) {
-    // Runs once
+    // Runs once per entry into composition (again if the composable
+    // leaves and re-enters). Prefer loading in the ViewModel when possible.
     LaunchedEffect(Unit) {
         viewModel.loadData()
     }
     
-    // Runs when key changes
+    // Cancels and relaunches when key changes
     LaunchedEffect(userId) {
         viewModel.loadUser(userId)
     }

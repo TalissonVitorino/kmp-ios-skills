@@ -16,7 +16,7 @@ Add `google-services.json` to the `app/` directory and configure dependencies:
 ```kotlin
 // build.gradle.kts (project)
 plugins {
-    id("com.google.gms.google-services") version "4.4.0" apply false
+    id("com.google.gms.google-services") version "4.5.0" apply false
 }
 
 // build.gradle.kts (app)
@@ -25,10 +25,36 @@ plugins {
 }
 
 dependencies {
-    implementation(platform("com.google.firebase:firebase-bom:32.7.0"))
-    implementation("com.google.firebase:firebase-messaging-ktx")
+    implementation(platform("com.google.firebase:firebase-bom:34.18.0"))
+    implementation("com.google.firebase:firebase-messaging")
 }
 ```
+
+The `-ktx` modules were removed in BoM 34.0.0 — all Kotlin extensions (`Firebase.messaging`, etc.) now live in the main artifacts. Do not add `firebase-messaging-ktx`.
+
+### Manifest Registration
+
+Without the `MESSAGING_EVENT` intent filter the service is never invoked — this is the most common "onMessageReceived never fires" cause:
+
+```xml
+<service
+    android:name=".MyFirebaseMessagingService"
+    android:exported="false">
+    <intent-filter>
+        <action android:name="com.google.firebase.MESSAGING_EVENT" />
+    </intent-filter>
+</service>
+
+<!-- Applies only to notification messages FCM renders itself (app backgrounded). -->
+<meta-data android:name="com.google.firebase.messaging.default_notification_icon"
+    android:resource="@drawable/ic_notification" />
+<meta-data android:name="com.google.firebase.messaging.default_notification_color"
+    android:resource="@color/notification_accent" />
+<meta-data android:name="com.google.firebase.messaging.default_notification_channel_id"
+    android:value="default" />
+```
+
+The channel named by `default_notification_channel_id` must already exist when the message arrives; otherwise FCM falls back to a generic SDK-created channel the user cannot meaningfully tune.
 
 ### FirebaseMessagingService Implementation
 
@@ -36,8 +62,9 @@ dependencies {
 class MyFirebaseMessagingService : FirebaseMessagingService() {
 
     override fun onNewToken(token: String) {
-        // Send token to your server for targeting
-        TokenRepository.syncTokenToServer(token)
+        // Not a coroutine scope, and the process can be killed right after this
+        // returns — hand the upload to WorkManager instead of launching here.
+        TokenSyncWorker.enqueue(applicationContext, token)
     }
 
     override fun onMessageReceived(message: RemoteMessage) {
@@ -133,7 +160,7 @@ Call `NotificationChannels.createAll(this)` in `Application.onCreate()`.
 | Customizable | Limited | Full control |
 | Payload key | `"notification": {}` | `"data": {}` |
 
-**Best practice:** Use data-only messages for full control over display behavior.
+**Best practice:** Use data-only messages for full control over display behavior. Caveat: data messages default to normal priority and can be deferred by Doze/App Standby — set `"android": {"priority": "high"}` only for time-sensitive, user-visible content, or delivery may be throttled. Max payload is 4096 bytes for both types (1000 characters via the console composer); send IDs, not content, and fetch the rest on receipt.
 
 ### Token Registration and Server Sync
 
@@ -156,21 +183,28 @@ class TokenRepository(private val api: ApiService) {
 }
 ```
 
+`Task.await()` requires `org.jetbrains.kotlinx:kotlinx-coroutines-play-services`. `TokenSyncWorker` (enqueued from `onNewToken`) just wraps `syncTokenToServer`, so an upload that fails while the process is dying is retried by WorkManager instead of lost — a dropped rotation silently stops all pushes to that install.
+
 ### Notification Permission (Android 13+)
 
-```kotlin
-val requestPermissionLauncher = registerForActivityResult(
-    ActivityResultContracts.RequestPermission()
-) { isGranted ->
-    if (isGranted) {
-        // Permission granted, sync token
-    }
-}
+Declare `<uses-permission android:name="android.permission.POST_NOTIFICATIONS" />` in the manifest, then request at runtime:
 
-if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-    requestPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+```kotlin
+// Must be registered during construction / onCreate — before the host reaches STARTED.
+private val requestPermissionLauncher = registerForActivityResult(
+    ActivityResultContracts.RequestPermission()
+) { isGranted -> if (isGranted) viewModel.syncPushToken() }
+
+private fun ensureNotificationPermission() {
+    if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) return
+    val granted = ContextCompat.checkSelfPermission(
+        this, Manifest.permission.POST_NOTIFICATIONS
+    ) == PackageManager.PERMISSION_GRANTED
+    if (!granted) requestPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
 }
 ```
+
+Once the user has denied twice the launcher returns `false` immediately without showing a dialog; the only recovery is `Settings.ACTION_APP_NOTIFICATION_SETTINGS` with `Settings.EXTRA_APP_PACKAGE`. Swiping the dialog away leaves the state unchanged and does not count as a denial. Apps still targeting API 32 or lower get the dialog automatically on first channel creation, and a single "Don't allow" is permanent until reinstall — another reason to target 33+.
 
 ---
 
@@ -179,9 +213,11 @@ if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
 ### Push Notification Capability
 
 Enable in Xcode: Target > Signing & Capabilities > + Push Notifications.
-Also enable Background Modes > Remote notifications.
+Enable Background Modes > Remote notifications only if you send silent pushes (`"content-available": 1`) — alert-bearing pushes do not need it.
 
 ### UNUserNotificationCenter Setup and Permissions
+
+Assign `UNUserNotificationCenter.current().delegate` in `didFinishLaunchingWithOptions`, before the method returns — not inside the authorization request. A cold launch from a notification tap delivers `didReceive response:` immediately after launch, and a delegate set later misses it.
 
 ```swift
 import UserNotifications
@@ -191,10 +227,9 @@ final class NotificationManager: NSObject, UNUserNotificationCenterDelegate {
 
     func requestAuthorization() async -> Bool {
         let center = UNUserNotificationCenter.current()
-        center.delegate = self
         do {
             let granted = try await center.requestAuthorization(
-                options: [.alert, .badge, .sound, .provisional]
+                options: [.alert, .badge, .sound]
             )
             if granted {
                 await MainActor.run {
@@ -207,12 +242,13 @@ final class NotificationManager: NSObject, UNUserNotificationCenterDelegate {
         }
     }
 
-    // Foreground notification display
+    // Foreground notification display. `.list` is what keeps it in Notification
+    // Center afterwards — `.banner` alone shows it once and drops it.
     func userNotificationCenter(
         _ center: UNUserNotificationCenter,
         willPresent notification: UNNotification
     ) async -> UNNotificationPresentationOptions {
-        return [.banner, .badge, .sound]
+        return [.banner, .list, .badge, .sound]
     }
 
     // Notification tap handling
@@ -240,6 +276,8 @@ final class NotificationManager: NSObject, UNUserNotificationCenterDelegate {
 }
 ```
 
+`UNUserNotificationCenterDelegate` callbacks are not main-actor isolated. Under Swift 6 language mode, mark the router `@MainActor` and hop explicitly (`await MainActor.run { ... }`) rather than touching UI state directly from the callback.
+
 ### AppDelegate Registration
 
 ```swift
@@ -259,9 +297,15 @@ func application(
 }
 ```
 
+### Silent (Background) Pushes
+
+A payload of `{"aps": {"content-available": 1}}` with no alert, sound, or badge does **not** reach the `UNUserNotificationCenterDelegate` — it wakes the app through `application(_:didReceiveRemoteNotification:fetchCompletionHandler:)`. APNs also requires the `apns-push-type: background` and `apns-priority: 5` headers (FCM: `"apns": {"headers": {"apns-push-type": "background", "apns-priority": "5"}}`); a background push sent at priority 10 is rejected.
+
+Call the completion handler with an honest `UIBackgroundFetchResult` within ~30 s. Delivery is budgeted and coalesced by the system — silent pushes are a hint to sync, never a guaranteed transport, so the app must still reconcile on foreground.
+
 ### Notification Service Extension (Rich Notifications)
 
-Create a new target: File > New > Target > Notification Service Extension.
+Create a new target: File > New > Target > Notification Service Extension. The extension runs only when the APNs payload carries **both** `"mutable-content": 1` and an `alert` dictionary inside `aps` (FCM: set `"apns": {"payload": {"aps": {"mutable-content": 1}}}` alongside the alert). Miss either one — notably on a silent `content-available` push — and the notification is delivered unmodified without the extension ever launching.
 
 ```swift
 class NotificationService: UNNotificationServiceExtension {
@@ -290,6 +334,22 @@ class NotificationService: UNNotificationServiceExtension {
         }
     }
 
+    // UNNotificationAttachment requires a local file URL with a recognizable
+    // extension; move the temp download before creating the attachment.
+    private func downloadImage(
+        from url: URL,
+        completion: @escaping (UNNotificationAttachment?) -> Void
+    ) {
+        URLSession.shared.downloadTask(with: url) { tempURL, _, _ in
+            guard let tempURL else { return completion(nil) }
+            let localURL = FileManager.default.temporaryDirectory
+                .appendingPathComponent(UUID().uuidString)
+                .appendingPathExtension(url.pathExtension.isEmpty ? "jpg" : url.pathExtension)
+            try? FileManager.default.moveItem(at: tempURL, to: localURL)
+            completion(try? UNNotificationAttachment(identifier: "image", url: localURL))
+        }.resume()
+    }
+
     override func serviceExtensionTimeWillExpire() {
         if let content = bestAttemptContent {
             contentHandler?(content)
@@ -300,28 +360,34 @@ class NotificationService: UNNotificationServiceExtension {
 
 ### Provisional Authorization (iOS 12+)
 
-Provisional auth delivers notifications quietly to Notification Center without prompting:
+Including `.provisional` skips the permission dialog entirely: authorization is granted silently and notifications are delivered quietly to Notification Center only (no banner, sound, or badge). Never mix `.provisional` into a request where you expect the user to see a prompt.
 
 ```swift
 let granted = try await center.requestAuthorization(options: [.alert, .sound, .provisional])
 ```
 
-Users can then promote to prominent delivery or turn off from the notification itself.
+Users can then promote to prominent delivery or turn off from the notification itself. Check `await center.notificationSettings().authorizationStatus == .provisional` to detect this state (`notificationSettings()` is async).
 
 ---
 
 ## Testing
 
-```bash
-# Android - send test via Firebase CLI
-firebase messaging:send --project=my-project --json '{
-  "message": {
-    "token": "DEVICE_TOKEN",
-    "data": { "type": "chat", "title": "Test", "body": "Hello" }
-  }
-}'
+The Firebase CLI has no send command. Send test FCM messages via the console's Notifications composer, the Admin SDK, or the HTTP v1 API directly (the legacy server API was shut down in 2024):
 
-# iOS - local notification for testing UI
+```bash
+# Android - FCM HTTP v1 API (needs cloud-platform or firebase.messaging OAuth scope)
+curl -X POST "https://fcm.googleapis.com/v1/projects/PROJECT_ID/messages:send" \
+  -H "Authorization: Bearer $(gcloud auth print-access-token)" \
+  -H "Content-Type: application/json" \
+  -d '{"message": {"token": "DEVICE_TOKEN", "data": {"type": "chat", "title": "Test", "body": "Hello"}}}'
+
+# iOS Simulator - inject an APNs payload (payload.apns = {"aps": {"alert": {"title": "Test"}}})
+xcrun simctl push booted com.example.app payload.apns
+```
+
+For UI-only testing on device, schedule a local notification:
+
+```swift
 let content = UNMutableNotificationContent()
 content.title = "Test Notification"
 content.body = "This is a local test."

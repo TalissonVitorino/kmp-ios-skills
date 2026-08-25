@@ -34,14 +34,14 @@ To begin using the modern UI Automator APIs, update your project's
 
     dependencies {
       ...
-      androidTestImplementation("androidx.test.uiautomator:uiautomator:2.4.0-alpha05")
+      androidTestImplementation("androidx.test.uiautomator:uiautomator:2.4.0")
     }
 
 ### Groovy
 
     dependencies {
       ...
-      androidTestImplementation "androidx.test.uiautomator:uiautomator:2.4.0-alpha05"
+      androidTestImplementation "androidx.test.uiautomator:uiautomator:2.4.0"
     }
 
 ## Core API concepts

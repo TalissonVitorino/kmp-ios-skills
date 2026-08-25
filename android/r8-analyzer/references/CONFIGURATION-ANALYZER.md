@@ -80,7 +80,7 @@ in the same directory.
             return False
 
     if __name__ == "__main__":
-     input_pb = sys.argv[1] if len(sys.argv) > 1 else None
+        input_pb = sys.argv[1] if len(sys.argv) > 1 else None
         if not input_pb:
             pb_files = glob.glob("tmp/r8analysis/*.pb")
             if not pb_files:

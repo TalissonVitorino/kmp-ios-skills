@@ -18,7 +18,7 @@ look for (imports/usage) and the corresponding suggested rules.
   \`\`\`proguard
 
   -keep class \* implements com.example.library.StartupTask {
-  (); } \`\`\`
+  <init>(); } \`\`\`
 
 ### 2. Reflection: Classes Passed using `::class.java`
 
@@ -37,7 +37,7 @@ look for (imports/usage) and the corresponding suggested rules.
   # Keep the class itself (R8 usually handles this, but explicit rules ensure stability)
 
   -keep class com.example.app.MyService {
-  (); } \`\`\`
+  <init>(); } \`\`\`
 
 ### 3. Annotation-Based Reflection (Methods/Classes)
 

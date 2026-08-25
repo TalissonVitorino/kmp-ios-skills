@@ -15,6 +15,7 @@ Copied and, where noted in the skill body, adapted:
 | `agp-9-upgrade` | `android/agp-9-upgrade` |
 | `android-cli` | `android/android-cli` |
 | `android-intent-security` | `android/android-intent-security` |
+| `android-profiler` | `android/android-profiler` |
 | `camerax` | `android/camerax` |
 | `compose-adaptive` | `android/compose-adaptive` |
 | `compose-theming-styles` | `android/compose-theming-styles` |
@@ -23,6 +24,8 @@ Copied and, where noted in the skill body, adapted:
 | `perfetto-trace-analysis` | `android/perfetto-trace-analysis` |
 | `play-billing-upgrade` | `android/play-billing-upgrade` |
 | `play-policy-insights` | `android/play-policy-insights` |
+| `restore-credentials` | `android/restore-credentials` |
+| `verified-email` | `android/verified-email` |
 | `r8-analyzer` | `android/r8-analyzer` |
 
 The Navigation 3 section and the recipe tree under `cross-platform/navigation/references/` also derive from `android/skills`. That skill is a merge of three originals (Jetpack Navigation Compose, Navigation 3, and multiplatform navigation); only the Navigation 3 material is Google's.

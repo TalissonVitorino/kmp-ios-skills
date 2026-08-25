@@ -5,7 +5,9 @@ description: Koin DI fundamentals and DSL reference - module {}, single/factory/
 
 # Koin Dependency Injection
 
-Pragmatic DI for Kotlin with Koin.
+Pragmatic DI for Kotlin with Koin. Current stable: BOM `io.insert-koin:koin-bom:4.2.2` —
+pull `koin-core`, `koin-android`, `koin-androidx-compose`, `koin-compose` +
+`koin-compose-viewmodel` (KMP), `koin-test` / `koin-test-junit4` without versions from it.
 
 ## Module Setup
 
@@ -48,6 +50,31 @@ val homeModule = module {
 }
 ```
 
+## Constructor DSL (*Of)
+
+Constructor references instead of lambdas — Koin resolves each constructor parameter with `get()`:
+
+```kotlin
+val homeModule = module {
+    singleOf(::HomeRepositoryImpl) bind HomeRepository::class
+    factoryOf(::GetItemsUseCase)
+    viewModelOf(::HomeViewModel)
+
+    // Options lambda: qualifier, extra bindings, eager creation
+    singleOf(::RemoteTracker) {
+        named("remote")
+        bind<Tracker>()
+        createdAtStart()
+    }
+}
+```
+
+`bind<T>()` / `bind T::class` only add a **secondary type** — Koin does not check the
+hierarchy, so the class must actually implement `T` or `get<T>()` throws
+`ClassCastException` at resolution. Never bind to a final third-party class.
+
+Since Koin 4.0 the ViewModel DSL is multiplatform: import `viewModel`/`viewModelOf` from `org.koin.core.module.dsl` (koin-core-viewmodel). The old `org.koin.androidx.viewmodel.dsl` imports are deprecated.
+
 ## Application Setup
 
 ```kotlin
@@ -57,12 +84,7 @@ class MyApp : Application() {
         
         startKoin {
             androidContext(this@MyApp)
-            modules(
-                appModule,
-                networkModule,
-                homeModule,
-                detailModule
-            )
+            modules(appModule, networkModule, homeModule)
         }
     }
 }
@@ -78,10 +100,11 @@ fun HomeScreen(viewModel: HomeViewModel = koinViewModel()) {
     // ...
 }
 
-// With parameters
+// With parameters — pass a unique key, or the same instance is
+// reused for different ids within the same ViewModelStoreOwner
 @Composable
 fun DetailScreen(itemId: String) {
-    val viewModel: DetailViewModel = koinViewModel { parametersOf(itemId) }
+    val viewModel: DetailViewModel = koinViewModel(key = itemId) { parametersOf(itemId) }
     // ...
 }
 
@@ -97,34 +120,52 @@ viewModel { params ->
 ## Scopes
 
 ```kotlin
-// Activity scope
+// Type-based scope: only MainActivity resolves it
 val activityModule = module {
     scope<MainActivity> {
         scoped { NavigationController() }
     }
 }
 
-// Usage
-class MainActivity : AppCompatActivity(), KoinScopeComponent {
+// Usage: AndroidScopeComponent creates/closes the scope with the lifecycle;
+// by inject() then resolves from the activity's scope
+class MainActivity : AppCompatActivity(), AndroidScopeComponent {
     override val scope: Scope by activityScope()
     
     val nav: NavigationController by inject()
 }
 ```
 
+Prefer **archetype scopes** (`org.koin.androidx.scope.dsl`) — reusable across any
+Activity/Fragment instead of one concrete class:
+
+```kotlin
+val activityModule = module {
+    activityScope { scoped { NavigationController() } }  // dies with the Activity
+    activityRetainedScope { scoped { DraftForm() } }     // survives rotation
+    fragmentScope { scoped { FragmentPresenter(get()) } }
+}
+```
+
+`ScopeActivity` / `RetainedScopeActivity` / `ScopeFragment` implement `AndroidScopeComponent`
+for you. Override `onCloseScope()` for cleanup — the scope is already closed in `onDestroy()`.
+
 ## Qualifiers
 
 ```kotlin
 val networkModule = module {
-    single(named("auth")) { createAuthClient() }
-    single(named("default")) { createDefaultClient() }
+    single<HttpClient>(named("auth")) { createAuthClient() }
+    single<HttpClient>(named("default")) { createDefaultClient() }
+
+    // Resolve by qualifier at the definition site
+    single<UserApi> { UserApiImpl(client = get(named("auth"))) }
 }
 
-// Usage
-class UserApi(
-    @Named("auth") private val client: HttpClient
-)
+// In a KoinComponent
+private val client: HttpClient by inject(named("auth"))
 ```
+
+`@Named` on constructor parameters is Koin Annotations (KSP) / compiler-plugin territory — with the classic DSL, qualifiers are resolved via `get(named(...))`/`inject(named(...))`.
 
 ## Testing
 

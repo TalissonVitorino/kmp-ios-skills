@@ -5,9 +5,15 @@ description: Material 3 Expressive design patterns for Jetpack Compose - express
 
 # Material 3 Expressive for Jetpack Compose
 
-Material 3 Expressive is the next evolution of Material Design, bringing emotionally resonant, physics-based, and highly dynamic UI patterns to Android. It introduces spring-based motion, shape morphing, emphasized typography, expressive color palettes, and 28 new or enhanced components.
+Material 3 Expressive extends Material 3 with spring-based motion, morphable shapes, emphasized type styles, a recoloured baseline palette, and a set of new components. This skill covers the Compose implementation in `androidx.compose.material3`.
 
-> **All M3 Expressive APIs are experimental.** Every composable, theme function, and motion token requires `@OptIn(ExperimentalMaterial3ExpressiveApi::class)`.
+> **Version gate — verified against material3 1.4.0 and 1.5.0-alpha26 (Aug 2026).**
+>
+> - **1.4.0 (stable, Compose BOM `2026.08.00`) exposes almost none of this.** `MaterialExpressiveTheme`, `expressiveLightColorScheme()`, `MotionScheme` / `MotionScheme.expressive()` / `MaterialTheme.motionScheme`, every `*Emphasized` type style, `Shapes.largeIncreased` / `extraLargeIncreased` / `extraExtraLarge`, `MediumFlexibleTopAppBar` / `LargeFlexibleTopAppBar` / `TwoRowsTopAppBar` / `FlexibleBottomAppBar` and `VerticalSlider` are all declared **`internal`** in 1.4.0. Only `WideNavigationRail` and `ShortNavigationBar` are public there.
+> - **Everything else in this skill needs `1.5.0-alpha*`** — toggle buttons, `ButtonGroup`, `SplitButtonLayout`, the FAB menu and sized FABs, floating toolbars, wavy progress indicators, loading indicators, menu groups, the expanded search bars, `MaterialShapes`. In practice: use the alpha BOM or none of this resolves.
+> - **Opt-in:** `ExperimentalMaterial3ExpressiveApi` is itself `internal` in 1.4.0, so the `@OptIn` cannot even be written there. From 1.5.0-alpha23 most expressive APIs graduated to stable; on 1.5.0-alpha26 only `LoadingIndicator` / `ContainedLoadingIndicator` and `MaterialShapes` / `Morph.toPath` / `RoundedPolygon.toShape` still require it. `AppBarWithSearch` and the deprecated `TopSearchBar` need `@OptIn(ExperimentalMaterial3Api::class)` instead — a different annotation. A redundant opt-in is harmless (an "unnecessary @OptIn" warning).
+>
+> Examples below are written for 1.5.0-alpha26 and keep the opt-in annotation. For general Compose state/recomposition work prefer `android-skills:compose`; for non-expressive theming see `compose-theming-styles`.
 
 ## Gradle Setup
 
@@ -15,18 +21,21 @@ Material 3 Expressive is the next evolution of Material Design, bringing emotion
 // build.gradle.kts (app module)
 plugins {
     id("org.jetbrains.kotlin.android")            // or kotlin("multiplatform")
-    // Kotlin 2.0+ ships the Compose compiler as a Gradle plugin — versioned WITH Kotlin.
+    // Kotlin 2.x ships the Compose compiler as a Gradle plugin — versioned WITH Kotlin.
     // Do NOT use composeOptions { kotlinCompilerExtensionVersion } anymore (Kotlin 1.9-era, invalid on 2.x).
     id("org.jetbrains.kotlin.plugin.compose")
 }
 
 dependencies {
-    // Material 3 Expressive requires 1.4.0-alpha+ or BOM 2025.05+ (which requires Kotlin 2.x).
-    implementation(platform("androidx.compose:compose-bom:2025.05.00")) // verify latest BOM
+    // Expressive is alpha-only today — the stable BOM keeps these APIs internal.
+    implementation(platform("androidx.compose:compose-bom-alpha:2026.08.00"))   // -> material3 1.5.0-alpha26
+    // Stable alternative, without any expressive API:
+    // implementation(platform("androidx.compose:compose-bom:2026.08.00"))      // -> material3 1.4.0
+
     implementation("androidx.compose.material3:material3")
-    implementation("androidx.compose.material3:material3-adaptive-navigation-suite")
     implementation("androidx.compose.animation:animation")
     implementation("androidx.compose.foundation:foundation")
+    // MaterialShapes / Morph live in androidx.graphics:graphics-shapes, pulled in by material3.
 }
 
 android {
@@ -62,7 +71,8 @@ fun AppTheme(
             if (darkTheme) dynamicDarkColorScheme(context)
             else dynamicLightColorScheme(context)
         }
-        darkTheme -> expressiveDarkColorScheme()
+        // There is NO expressiveDarkColorScheme() — the expressive palette is light-only.
+        darkTheme -> darkColorScheme()
         else -> expressiveLightColorScheme()
     }
 
@@ -75,7 +85,7 @@ fun AppTheme(
             medium = RoundedCornerShape(16.dp),
             large = RoundedCornerShape(24.dp),
             extraLarge = RoundedCornerShape(32.dp),
-            // Expressive increased shapes
+            // Increased/extraExtraLarge params exist only on the 8-arg ctor (material3 1.5.0-alpha+).
             largeIncreased = RoundedCornerShape(28.dp),
             extraLargeIncreased = RoundedCornerShape(36.dp),
         ),
@@ -108,11 +118,13 @@ fun AppTheme(
 fun MaterialExpressiveTheme(
     colorScheme: ColorScheme? = null,     // null = expressiveLightColorScheme()
     motionScheme: MotionScheme? = null,   // null = MotionScheme.expressive()
-    shapes: Shapes? = null,               // null = expressive shape defaults
-    typography: Typography? = null,        // null = expressive typography defaults
+    shapes: Shapes? = null,               // null = Shapes()      (standard defaults)
+    typography: Typography? = null,       // null = Typography()  (standard defaults)
     content: @Composable () -> Unit,
 )
 ```
+
+The defaults above apply only to the **outermost** `MaterialExpressiveTheme`. A nested one (it tracks this with an internal composition local) resolves each `null` slot from the enclosing `MaterialTheme` instead, so nesting overrides only the slots you actually pass. Note also that `shapes`/`typography` currently fall back to the *standard* `Shapes()` / `Typography()` — only the colour and motion slots have distinct expressive defaults today.
 
 ### Accessing Theme Values
 
@@ -245,66 +257,69 @@ fun AnimatedCard(isVisible: Boolean) {
 }
 ```
 
-### Spring Specifications Reference
+### Spring Constant Reference
+
+Exact values of the `Spring` presets (`androidx.compose.animation.core`) — note that **Low**Bouncy is the *least* bouncy:
+
+| Damping ratio | Value | Stiffness | Value |
+|---|---|---|---|
+| `DampingRatioHighBouncy` | `0.2f` | `StiffnessHigh` | `10000f` |
+| `DampingRatioMediumBouncy` | `0.5f` | `StiffnessMedium` | `1500f` |
+| `DampingRatioLowBouncy` | `0.75f` | `StiffnessMediumLow` | `400f` |
+| `DampingRatioNoBouncy` | `1.0f` | `StiffnessLow` | `200f` |
+| — | — | `StiffnessVeryLow` | `50f` |
+
+Prefer `MaterialTheme.motionScheme` tokens over hand-rolled springs; reach for raw `spring()` only when a token has the wrong character.
+
+### Shape Morphing Animations
+
+True shape morphing uses `MaterialShapes` (35 predefined `RoundedPolygon`s) and `Morph` from `androidx.graphics:graphics-shapes`. `MaterialShapes`, `Morph.toPath` and `RoundedPolygon.toShape` are still `@ExperimentalMaterial3ExpressiveApi` on 1.5.0-alpha26, and are absent from 1.4.0.
+
+Every `MaterialShapes` polygon is `RoundedPolygon.normalized()`, i.e. fitted into the **(0,0)–(1,1)** unit square, so `Morph.toPath()` over them emits a path in 0..1 and only needs scaling into the component's bounds. (The `scale(size.width / 2f, …)` + `translate(1f, 1f)` matrix in the AOSP shapes guide is for hand-built `RoundedPolygon(radius = 1f, centerX = 0f, centerY = 0f)` shapes, which live in -1..1 — applying it to `MaterialShapes` draws them at double size, off-centre.)
 
 ```kotlin
-// Common spring configurations for M3 Expressive
-object ExpressiveSprings {
-    // Bouncy - for playful, attention-grabbing animations
-    val bouncy = spring<Float>(
-        dampingRatio = 0.4f,    // Significant bounce
-        stiffness = 400f        // Medium-slow
-    )
+import androidx.compose.material3.MaterialShapes
+import androidx.compose.material3.toPath
+import androidx.compose.ui.graphics.Matrix
+import androidx.compose.ui.graphics.Outline
+import androidx.graphics.shapes.Morph
 
-    // Snappy - for responsive UI elements
-    val snappy = spring<Float>(
-        dampingRatio = 0.75f,   // Slight overshoot
-        stiffness = 1000f       // Fast
-    )
+@OptIn(ExperimentalMaterial3ExpressiveApi::class)
+class MorphShape(private val morph: Morph, private val progress: Float) : Shape {
+    override fun createOutline(size: Size, layoutDirection: LayoutDirection, density: Density): Outline {
+        val path = morph.toPath(progress)
+        path.transform(Matrix().apply { scale(size.width, size.height) })
+        return Outline.Generic(path)
+    }
+}
 
-    // Gentle - for large layout transitions
-    val gentle = spring<Float>(
-        dampingRatio = 0.6f,    // Moderate bounce
-        stiffness = 200f        // Slow, dramatic
+@OptIn(ExperimentalMaterial3ExpressiveApi::class)
+@Composable
+fun MorphingIcon(isActive: Boolean) {
+    val morph = remember { Morph(MaterialShapes.Cookie9Sided, MaterialShapes.Sunny) }
+    val progress by animateFloatAsState(
+        targetValue = if (isActive) 1f else 0f,
+        animationSpec = MaterialTheme.motionScheme.defaultSpatialSpec(),
+        label = "morph"
     )
-
-    // Critical - for precise, no-overshoot animations
-    val critical = spring<Float>(
-        dampingRatio = 1.0f,    // No overshoot
-        stiffness = 800f        // Medium-fast
+    Box(
+        Modifier
+            .size(96.dp)
+            .clip(MorphShape(morph, progress))
+            .background(MaterialTheme.colorScheme.primaryContainer)
     )
 }
 ```
 
-### Shape Morphing Animations
-
-Shape morphing transitions smoothly between different shape geometries, a signature M3 Expressive effect.
+For a single static polygon, `RoundedPolygon.toShape()` returns a `Shape` usable directly as a component `shape`. Animating a `RoundedCornerShape` corner size is a cheaper approximation when you only need pill ↔ rounded-rect:
 
 ```kotlin
-import androidx.compose.animation.core.animateFloatAsState
-import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.ui.graphics.Shape
-
-@OptIn(ExperimentalMaterial3ExpressiveApi::class)
-@Composable
-fun ShapeMorphButton(isActive: Boolean) {
-    val motion = MaterialTheme.motionScheme
-
-    // Morph between pill and rounded rectangle
-    val cornerPercent by animateIntAsState(
-        targetValue = if (isActive) 50 else 16,
-        animationSpec = motion.defaultSpatialSpec(),
-        label = "cornerMorph"
-    )
-
-    Button(
-        onClick = { /* toggle */ },
-        shape = RoundedCornerShape(cornerPercent),
-        modifier = Modifier.height(56.dp)
-    ) {
-        Text(if (isActive) "Active" else "Inactive")
-    }
-}
+val cornerPercent by animateIntAsState(
+    targetValue = if (isActive) 50 else 16,
+    animationSpec = MaterialTheme.motionScheme.defaultSpatialSpec(),
+    label = "cornerMorph"
+)
+Button(onClick = { }, shape = RoundedCornerShape(cornerPercent)) { Text("Toggle") }
 ```
 
 ### Shared Element Transitions
@@ -324,7 +339,8 @@ fun SharedElementDemo(
         Card(
             modifier = Modifier
                 .sharedElement(
-                    state = rememberSharedContentState(key = "item-${item.id}"),
+                    // Parameter is `sharedContentState`, not `state`.
+                    sharedContentState = rememberSharedContentState(key = "item-${item.id}"),
                     animatedVisibilityScope = animatedContentScope,
                     boundsTransform = { _, _ ->
                         // Use expressive spring for shared element bounds
@@ -348,33 +364,37 @@ fun SharedElementDemo(
 @OptIn(ExperimentalMaterial3ExpressiveApi::class)
 @Composable
 fun PredictiveBackScreen(onBack: () -> Unit) {
-    val motion = MaterialTheme.motionScheme
-
-    // Scale down as user drags back
+    // Drive progress from the real gesture, not a free-floating state.
     var backProgress by remember { mutableFloatStateOf(0f) }
 
-    val scale by animateFloatAsState(
-        targetValue = 1f - (backProgress * 0.1f),
-        animationSpec = motion.fastSpatialSpec(),
-        label = "backScale"
-    )
-
-    val cornerRadius by animateDpAsState(
-        targetValue = (backProgress * 24).dp,
-        animationSpec = motion.fastSpatialSpec(),
-        label = "backCorner"
-    )
+    PredictiveBackHandler(enabled = true) { events ->
+        try {
+            events.collect { backProgress = it.progress }   // BackEventCompat.progress, 0f..1f
+            onBack()
+        } finally {
+            backProgress = 0f
+        }
+    }
 
     Box(
         modifier = Modifier
             .fillMaxSize()
-            .scale(scale)
-            .clip(RoundedCornerShape(cornerRadius))
+            // Gesture progress is already continuous — apply it directly in the
+            // layer lambda instead of feeding it through animate*AsState.
+            .graphicsLayer {
+                val s = 1f - backProgress * 0.1f
+                scaleX = s
+                scaleY = s
+                shape = RoundedCornerShape((backProgress * 24).dp)
+                clip = true
+            }
     ) {
         // Screen content
     }
 }
 ```
+
+`PredictiveBackHandler` comes from `androidx.activity.compose`; the gesture only produces progress when the app opts into predictive back (`android:enableOnBackInvokedCallback="true"` in the manifest, API 33+).
 
 ### Keyframe Animations
 
@@ -413,9 +433,11 @@ fun KeyframeAnimationDemo() {
 
 ## 3. Shape System
 
-M3 Expressive introduces **35 new shape tokens** beyond the standard Material shapes, including increased variants and expressive morphable shapes.
+Two distinct things are called "shapes" in M3 Expressive: the corner-radius tokens on `MaterialTheme.shapes`, and the 35 predefined `MaterialShapes` polygons used for morphing (see section 2).
 
-### Shape Tokens
+### Corner Shape Tokens
+
+`Shapes` has exactly eight properties. There is **no** `smallIncreased`, `mediumIncreased`, or `full`.
 
 ```kotlin
 @OptIn(ExperimentalMaterial3ExpressiveApi::class)
@@ -423,54 +445,18 @@ M3 Expressive introduces **35 new shape tokens** beyond the standard Material sh
 fun ShapeTokensReference() {
     val shapes = MaterialTheme.shapes
 
-    // Standard Material 3 shapes
     shapes.extraSmall          // 4.dp corner radius
     shapes.small               // 8.dp
     shapes.medium              // 12.dp
     shapes.large               // 16.dp
     shapes.extraLarge          // 28.dp
 
-    // Expressive increased shapes - larger corner radii for emphasis
-    shapes.smallIncreased      // 10.dp
-    shapes.mediumIncreased     // 16.dp
-    shapes.largeIncreased      // 24.dp
+    // Increased variants (material3 1.5.0-alpha+; internal in 1.4.0)
+    shapes.largeIncreased      // 20.dp
     shapes.extraLargeIncreased // 32.dp
+    shapes.extraExtraLarge     // 48.dp
 
-    // Full shapes for pills/circles
-    shapes.full                // 50% corner radius (pill/circle)
-}
-```
-
-### Custom Shapes with Morphing
-
-```kotlin
-@OptIn(ExperimentalMaterial3ExpressiveApi::class)
-@Composable
-fun MorphableShapeDemo() {
-    var isCircle by remember { mutableStateOf(false) }
-    val motion = MaterialTheme.motionScheme
-
-    val cornerPercent by animateIntAsState(
-        targetValue = if (isCircle) 50 else 12,
-        animationSpec = motion.defaultSpatialSpec(),
-        label = "shapeMorph"
-    )
-
-    Surface(
-        modifier = Modifier
-            .size(120.dp)
-            .clickable { isCircle = !isCircle },
-        shape = RoundedCornerShape(percent = cornerPercent),
-        color = MaterialTheme.colorScheme.secondaryContainer
-    ) {
-        Box(contentAlignment = Alignment.Center) {
-            Icon(
-                imageVector = Icons.Default.Star,
-                contentDescription = "Star",
-                tint = MaterialTheme.colorScheme.onSecondaryContainer
-            )
-        }
-    }
+    // For a pill/circle use CircleShape (or RoundedCornerShape(50)) directly.
 }
 ```
 
@@ -503,11 +489,11 @@ fun ShapedComponents() {
 
     Spacer(modifier = Modifier.height(16.dp))
 
-    // Full pill shape
+    // Full pill shape — CircleShape, there is no shapes.full token
     AssistChip(
         onClick = { },
         label = { Text("Pill Chip") },
-        shape = MaterialTheme.shapes.full
+        shape = CircleShape
     )
 }
 ```
@@ -614,31 +600,42 @@ fun createExpressiveTypography(): Typography {
 
 ### Variable Font Emphasis
 
+Variation axes are set on the `Font` itself, not on `TextStyle` — `TextStyle` has no `fontVariationSettings`. Use `FontVariation.Settings` (API 26+; ignored below that) and build a `FontFamily` whose entries differ by axis value.
+
 ```kotlin
+import androidx.compose.ui.text.font.FontVariation
+
+val expressiveFamily = FontFamily(
+    Font(
+        R.font.roboto_flex,
+        weight = FontWeight.SemiBold,
+        variationSettings = FontVariation.Settings(
+            FontVariation.weight(600),
+            FontVariation.width(105f),
+            FontVariation.grade(50),        // slight optical weight bump on dark surfaces
+        ),
+    )
+)
+
 @OptIn(ExperimentalMaterial3ExpressiveApi::class)
 @Composable
 fun VariableFontEmphasis() {
-    // With variable fonts (e.g., Google Fonts with axes),
-    // emphasis can be expressed through optical size and grade
-    // rather than just weight changes
-
-    val emphasizedStyle = MaterialTheme.typography.headlineLargeEmphasized.copy(
-        // Variable font settings for richer emphasis
-        fontFeatureSettings = "ss01",  // Stylistic set for display use
-    )
-
     Text(
         text = "Variable Font Emphasis",
-        style = emphasizedStyle
+        style = MaterialTheme.typography.headlineLargeEmphasized.copy(
+            fontFamily = expressiveFamily
+        )
     )
 }
 ```
+
+`fontFeatureSettings` on `TextStyle` is a separate mechanism (OpenType features such as `"ss01"`), not variable-font axes.
 
 ---
 
 ## 5. Color System
 
-M3 Expressive extends the color system with richer palettes, stronger tertiary accents, and emphasis-driven color roles.
+M3 Expressive keeps the M3 colour *roles* unchanged and swaps the baseline palette: `expressiveLightColorScheme()` is a more saturated, tertiary-forward light scheme than `lightColorScheme()`.
 
 ### Expressive Color Schemes
 
@@ -646,17 +643,12 @@ M3 Expressive extends the color system with richer palettes, stronger tertiary a
 @OptIn(ExperimentalMaterial3ExpressiveApi::class)
 @Composable
 fun ColorSchemeDemo() {
-    // Expressive light scheme - warmer, more vibrant palette
+    // The one expressive baseline scheme — takes no parameters.
     val lightColors = expressiveLightColorScheme()
 
-    // Expressive dark scheme - deeper, richer dark palette
-    val darkColors = expressiveDarkColorScheme()
-
-    // Key differences from standard M3 color schemes:
-    // - Tertiary colors are more prominent (used for high-contrast accents)
-    // - Container colors have more saturation
-    // - Surface variants have subtle tonal shifts
-    // - Error colors are more vivid
+    // There is NO expressiveDarkColorScheme(). Pair it with the standard
+    // darkColorScheme() for dark mode; that is what the official sample does.
+    val darkColors = darkColorScheme()
 }
 ```
 
@@ -723,14 +715,15 @@ fun DynamicExpressiveColor() {
     val context = LocalContext.current
     val darkTheme = isSystemInDarkTheme()
 
-    // Dynamic color extracts palette from user wallpaper
-    // and applies expressive tonal mapping
+    // Dynamic color extracts the palette from the user's wallpaper (API 31+).
+    // Note: dynamic* schemes are the standard M3 tonal mapping — choosing them
+    // opts out of the expressive baseline palette entirely.
     val colorScheme = when {
         Build.VERSION.SDK_INT >= Build.VERSION_CODES.S -> {
             if (darkTheme) dynamicDarkColorScheme(context)
             else dynamicLightColorScheme(context)
         }
-        darkTheme -> expressiveDarkColorScheme()
+        darkTheme -> darkColorScheme()
         else -> expressiveLightColorScheme()
     }
 
@@ -758,7 +751,7 @@ fun TertiaryAccentExample() {
         // Active tab with tertiary accent
         Surface(
             color = colors.tertiaryContainer,
-            shape = MaterialTheme.shapes.full
+            shape = CircleShape
         ) {
             Text(
                 "Active",
@@ -770,7 +763,7 @@ fun TertiaryAccentExample() {
         // Inactive tab with surface
         Surface(
             color = colors.surfaceContainerHigh,
-            shape = MaterialTheme.shapes.full
+            shape = CircleShape
         ) {
             Text(
                 "Inactive",
@@ -786,50 +779,40 @@ fun TertiaryAccentExample() {
 
 ## 6. Expressive Components
 
-All 28 expressive components with complete code examples. Every component requires:
-
-```kotlin
-@OptIn(ExperimentalMaterial3ExpressiveApi::class)
-```
+Signatures below are material3 1.5.0-alpha26 (see the version gate at the top — none of these are public in 1.4.0). The `@OptIn` annotation is kept throughout for uniformity; on alpha26 it is only load-bearing for the loading indicators and the `MaterialShapes` helpers.
 
 ### 6.1 ButtonGroup
 
-Groups related buttons together with shared container styling and automatic spacing.
+A connected row of buttons that squeezes neighbours on press and spills extras into an overflow menu. `overflowIndicator` is a **required first parameter**, and the content lambda is a `ButtonGroupScope` — you declare items with `clickableItem` / `toggleableItem` / `customItem`, not by emitting arbitrary composables.
 
 ```kotlin
 @OptIn(ExperimentalMaterial3ExpressiveApi::class)
 @Composable
 fun ButtonGroupDemo() {
-    ButtonGroup(
-        modifier = Modifier.fillMaxWidth()
-    ) {
-        Button(onClick = { }) { Text("Option A") }
-        Button(onClick = { }) { Text("Option B") }
-        Button(onClick = { }) { Text("Option C") }
-    }
-}
-
-// ButtonGroup with mixed button types
-@OptIn(ExperimentalMaterial3ExpressiveApi::class)
-@Composable
-fun MixedButtonGroup() {
     var selectedIndex by remember { mutableIntStateOf(0) }
+    val options = listOf("Day", "Week", "Month")
 
-    ButtonGroup {
-        listOf("Day", "Week", "Month").forEachIndexed { index, label ->
-            if (index == selectedIndex) {
-                FilledTonalButton(onClick = { selectedIndex = index }) {
-                    Text(label)
-                }
-            } else {
-                OutlinedButton(onClick = { selectedIndex = index }) {
-                    Text(label)
-                }
+    ButtonGroup(
+        overflowIndicator = { menuState ->
+            IconButton(onClick = { menuState.show() }) {
+                Icon(Icons.Default.MoreVert, contentDescription = "More options")
             }
+        },
+        modifier = Modifier.fillMaxWidth(),
+    ) {
+        options.forEachIndexed { index, label ->
+            toggleableItem(
+                checked = index == selectedIndex,
+                label = label,                       // plain String, not a composable
+                onCheckedChange = { selectedIndex = index },
+            )
         }
+        clickableItem(onClick = { /* export */ }, label = "Export")
     }
 }
 ```
+
+`customItem(buttonGroupContent, menuContent)` takes an arbitrary composable plus the menu row it collapses into. `Modifier.animateWidth(interactionSource)` inside a custom item gives it the press-squeeze behaviour.
 
 ### 6.2 CircularWavyProgressIndicator
 
@@ -862,24 +845,29 @@ fun CircularWavyProgressDemo() {
 
 ### 6.3 ContainedLoadingIndicator
 
-A loading indicator contained within a surface, suitable for inline loading states.
+The morphing loading indicator drawn inside a filled container. Parameters are `containerColor` / `indicatorColor` / `containerShape` — there is no `color` or `shape`. Still `@ExperimentalMaterial3ExpressiveApi` on 1.5.0-alpha26.
 
 ```kotlin
 @OptIn(ExperimentalMaterial3ExpressiveApi::class)
 @Composable
-fun ContainedLoadingDemo() {
+fun ContainedLoadingDemo(progress: () -> Float) {
+    // Indeterminate
     ContainedLoadingIndicator(
-        modifier = Modifier.size(width = 200.dp, height = 48.dp),
-        color = MaterialTheme.colorScheme.primary,
         containerColor = MaterialTheme.colorScheme.primaryContainer,
-        shape = MaterialTheme.shapes.full,
+        indicatorColor = MaterialTheme.colorScheme.onPrimaryContainer,
+        containerShape = LoadingIndicatorDefaults.containerShape,
     )
+
+    // Determinate — pass progress as a lambda so it is read in the draw phase
+    ContainedLoadingIndicator(progress = progress)
 }
 ```
 
+`polygons: List<RoundedPolygon>` overrides the shape sequence it morphs through; `LoadingIndicatorDefaults.IndeterminateIndicatorPolygons` is the default.
+
 ### 6.4 DropdownMenuGroup
 
-Groups related dropdown menu items with a visual separator.
+A grouped, separately-shaped block of menu items. The first parameter is `shapes: MenuGroupShapes` (required, no default) — get it from `MenuDefaults.groupShape(index, count)` so consecutive groups round correctly. There is **no `label` parameter**; emit `MenuDefaults.DropdownMenuGroupLabel { ... }` as the group's first child.
 
 ```kotlin
 @OptIn(ExperimentalMaterial3ExpressiveApi::class)
@@ -893,7 +881,8 @@ fun DropdownMenuGroupDemo() {
         }
 
         DropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
-            DropdownMenuGroup(label = { Text("Edit") }) {
+            DropdownMenuGroup(shapes = MenuDefaults.groupShape(index = 0, count = 2)) {
+                MenuDefaults.DropdownMenuGroupLabel { Text("Edit") }
                 DropdownMenuItem(
                     text = { Text("Cut") },
                     onClick = { expanded = false },
@@ -904,21 +893,11 @@ fun DropdownMenuGroupDemo() {
                     onClick = { expanded = false },
                     leadingIcon = { Icon(Icons.Default.ContentCopy, null) }
                 )
-                DropdownMenuItem(
-                    text = { Text("Paste") },
-                    onClick = { expanded = false },
-                    leadingIcon = { Icon(Icons.Default.ContentPaste, null) }
-                )
             }
-            DropdownMenuGroup(label = { Text("Format") }) {
-                DropdownMenuItem(
-                    text = { Text("Bold") },
-                    onClick = { expanded = false }
-                )
-                DropdownMenuItem(
-                    text = { Text("Italic") },
-                    onClick = { expanded = false }
-                )
+            DropdownMenuGroup(shapes = MenuDefaults.groupShape(index = 1, count = 2)) {
+                MenuDefaults.DropdownMenuGroupLabel { Text("Format") }
+                DropdownMenuItem(text = { Text("Bold") }, onClick = { expanded = false })
+                DropdownMenuItem(text = { Text("Italic") }, onClick = { expanded = false })
             }
         }
     }
@@ -927,7 +906,7 @@ fun DropdownMenuGroupDemo() {
 
 ### 6.5 DropdownMenuPopup
 
-A popup-style dropdown menu with expressive entry/exit animations.
+The unstyled popup container behind `DropdownMenu` — no surface, elevation or padding of its own. Use it when you need a menu positioned by a custom `DropdownMenuPopupPositionProvider` (from `rememberDropdownMenuPopupPositionProvider(MenuAnchorPosition…)`) but want to supply your own container; otherwise prefer `DropdownMenu`.
 
 ```kotlin
 @OptIn(ExperimentalMaterial3ExpressiveApi::class)
@@ -970,12 +949,13 @@ fun ElevatedToggleButtonDemo() {
     ElevatedToggleButton(
         checked = checked,
         onCheckedChange = { checked = it },
+        icon = {
+            Icon(
+                imageVector = if (checked) Icons.Filled.Bookmark else Icons.Outlined.BookmarkBorder,
+                contentDescription = null,
+            )
+        },
     ) {
-        Icon(
-            imageVector = if (checked) Icons.Filled.Bookmark else Icons.Outlined.BookmarkBorder,
-            contentDescription = "Bookmark"
-        )
-        Spacer(Modifier.width(8.dp))
         Text(if (checked) "Saved" else "Save")
     }
 }
@@ -983,46 +963,42 @@ fun ElevatedToggleButtonDemo() {
 
 ### 6.7 ExpandedDockedSearchBarWithGap
 
-An expanded search bar that docks to the top with a gap for content to show through.
+The expanded (results) half of a docked search bar, drawn as a dropdown separated from the input field by a gap. It is state-driven: the first parameter is a hoisted `SearchBarState`, and there is **no `expanded` / `onExpandedChange` pair**. The current `SearchBarDefaults.InputField` overload takes a `TextFieldState` plus the same `SearchBarState`; the `query`/`onQueryChange`/`expanded` overload is deprecated.
+
+Pair it with `AppBarWithSearch` for the collapsed input (`TopSearchBar` is deprecated in favour of it); `ExpandedFullScreenSearchBar` is the full-screen alternative. `AppBarWithSearch` is gated on `ExperimentalMaterial3Api`, **not** the expressive annotation — opt into both.
 
 ```kotlin
-@OptIn(ExperimentalMaterial3ExpressiveApi::class)
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun ExpandedDockedSearchBarDemo() {
-    var query by rememberSaveable { mutableStateOf("") }
-    var expanded by rememberSaveable { mutableStateOf(false) }
+fun ExpandedDockedSearchBarDemo(suggestions: List<String>) {
+    val searchBarState = rememberSearchBarState()
+    val textFieldState = rememberTextFieldState()
+    val scope = rememberCoroutineScope()
+
+    val inputField = @Composable {
+        SearchBarDefaults.InputField(
+            textFieldState = textFieldState,
+            searchBarState = searchBarState,
+            onSearch = { scope.launch { searchBarState.animateToCollapsed() } },
+            placeholder = { Text("Search...") },
+            leadingIcon = { Icon(Icons.Default.Search, "Search") },
+        )
+    }
+
+    AppBarWithSearch(state = searchBarState, inputField = inputField)
 
     ExpandedDockedSearchBarWithGap(
-        inputField = {
-            SearchBarDefaults.InputField(
-                query = query,
-                onQueryChange = { query = it },
-                onSearch = { expanded = false },
-                expanded = expanded,
-                onExpandedChange = { expanded = it },
-                placeholder = { Text("Search...") },
-                leadingIcon = { Icon(Icons.Default.Search, "Search") },
-                trailingIcon = {
-                    if (query.isNotEmpty()) {
-                        IconButton(onClick = { query = "" }) {
-                            Icon(Icons.Default.Close, "Clear")
-                        }
-                    }
-                }
-            )
-        },
-        expanded = expanded,
-        onExpandedChange = { expanded = it },
+        state = searchBarState,
+        inputField = inputField,
     ) {
-        // Search suggestions / results
         LazyColumn {
             items(suggestions) { suggestion ->
                 ListItem(
                     headlineContent = { Text(suggestion) },
                     leadingContent = { Icon(Icons.Default.History, null) },
                     modifier = Modifier.clickable {
-                        query = suggestion
-                        expanded = false
+                        textFieldState.setTextAndPlaceCursorAtEnd(suggestion)
+                        scope.launch { searchBarState.animateToCollapsed() }
                     }
                 )
             }
@@ -1229,27 +1205,26 @@ fun LargeFlexibleTopAppBarDemo() {
 
 ### 6.13 LinearWavyProgressIndicator
 
-A linear progress indicator with a wavy track animation.
+A linear progress indicator with a wavy track. Do not force a small `height()` — the wave needs room for its amplitude; tune `wavelength`, `amplitude` and `stroke` instead.
 
 ```kotlin
 @OptIn(ExperimentalMaterial3ExpressiveApi::class)
 @Composable
-fun LinearWavyProgressDemo() {
+fun LinearWavyProgressDemo(progress: () -> Float) {
     // Indeterminate
     LinearWavyProgressIndicator(
-        modifier = Modifier.fillMaxWidth().height(6.dp),
+        modifier = Modifier.fillMaxWidth(),
         color = MaterialTheme.colorScheme.primary,
         trackColor = MaterialTheme.colorScheme.surfaceContainerHighest,
     )
 
     Spacer(modifier = Modifier.height(16.dp))
 
-    // Determinate
-    var progress by remember { mutableFloatStateOf(0.4f) }
-
+    // Determinate. On this overload `amplitude` is a (Float) -> Float of progress —
+    // the default flattens the wave as it approaches 100%.
     LinearWavyProgressIndicator(
-        progress = { progress },
-        modifier = Modifier.fillMaxWidth().height(6.dp),
+        progress = progress,
+        modifier = Modifier.fillMaxWidth(),
         color = MaterialTheme.colorScheme.tertiary,
         trackColor = MaterialTheme.colorScheme.tertiaryContainer,
     )
@@ -1258,27 +1233,14 @@ fun LinearWavyProgressDemo() {
 
 ### 6.14 LoadingIndicator
 
-A standalone loading indicator with expressive animation.
+The uncontained morphing indicator — same shape sequence as `ContainedLoadingIndicator`, no container. Also still `@ExperimentalMaterial3ExpressiveApi`.
 
 ```kotlin
 @OptIn(ExperimentalMaterial3ExpressiveApi::class)
 @Composable
-fun LoadingIndicatorDemo() {
-    LoadingIndicator(
-        modifier = Modifier.size(48.dp),
-        color = MaterialTheme.colorScheme.primary,
-    )
-
-    // With text
-    Column(horizontalAlignment = Alignment.CenterHorizontally) {
-        LoadingIndicator(modifier = Modifier.size(32.dp))
-        Spacer(Modifier.height(8.dp))
-        Text(
-            "Loading...",
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant
-        )
-    }
+fun LoadingIndicatorDemo(progress: () -> Float) {
+    LoadingIndicator(color = MaterialTheme.colorScheme.primary)   // indeterminate
+    LoadingIndicator(progress = progress)                         // determinate
 }
 ```
 
@@ -1366,12 +1328,13 @@ fun OutlinedToggleButtonDemo() {
     OutlinedToggleButton(
         checked = checked,
         onCheckedChange = { checked = it },
+        icon = {
+            Icon(
+                imageVector = if (checked) Icons.Filled.Favorite else Icons.Outlined.FavoriteBorder,
+                contentDescription = null,
+            )
+        },
     ) {
-        Icon(
-            imageVector = if (checked) Icons.Filled.Favorite else Icons.Outlined.FavoriteBorder,
-            contentDescription = "Favorite"
-        )
-        Spacer(Modifier.width(8.dp))
         Text(if (checked) "Liked" else "Like")
     }
 }
@@ -1416,9 +1379,11 @@ fun SplitButtonDemo() {
             }
         },
         trailingButton = {
+            // Two overloads: (onClick, ...) and (checked, onCheckedChange, ...).
+            // Do not mix onClick with checked — that resolves to neither.
             SplitButtonDefaults.TrailingButton(
-                onClick = { expanded = !expanded },
                 checked = expanded,
+                onCheckedChange = { expanded = it },
             ) {
                 Icon(Icons.Default.ArrowDropDown, contentDescription = "More save options")
             }
@@ -1440,7 +1405,7 @@ fun SplitButtonDemo() {
 
 ### 6.22 ToggleButton (Filled)
 
-A filled toggle button for primary toggle actions.
+The filled toggle button; `ElevatedToggleButton`, `FilledTonalToggleButton` and `OutlinedToggleButton` (6.6 / 6.24 / 6.19) share its signature and differ only in defaults. All four take a dedicated optional `icon: @Composable (() -> Unit)?` slot — pass the icon there rather than inside `content`, so the leading-icon padding is correct — plus `buttonSize: ToggleButtonSize` (`ExtraSmall`/`Small`/`Medium`/`Large`/`ExtraLarge`) and `shapes: ToggleButtonShapes`, which carries the checked/pressed shape morph. `content` is a `RowScope`.
 
 ```kotlin
 @OptIn(ExperimentalMaterial3ExpressiveApi::class)
@@ -1451,12 +1416,13 @@ fun ToggleButtonDemo() {
     ToggleButton(
         checked = checked,
         onCheckedChange = { checked = it },
+        icon = {
+            Icon(
+                imageVector = if (checked) Icons.Filled.Mic else Icons.Filled.MicOff,
+                contentDescription = null,
+            )
+        },
     ) {
-        Icon(
-            imageVector = if (checked) Icons.Filled.Mic else Icons.Filled.MicOff,
-            contentDescription = "Microphone"
-        )
-        Spacer(Modifier.width(8.dp))
         Text(if (checked) "Muted" else "Unmuted")
     }
 }
@@ -1464,7 +1430,7 @@ fun ToggleButtonDemo() {
 
 ### 6.23 ToggleFloatingActionButton
 
-A FAB that toggles between two states with animation.
+A FAB that animates size, corner radius and colour across a checked transition — typically the button slot of a `FloatingActionButtonMenu`. `containerColor`, `containerSize` and `containerCornerRadius` are **functions of the 0f..1f checked progress**, not plain values; there is no `checkedContainerColor`. Content runs in `ToggleFloatingActionButtonScope`, which exposes `checkedProgress` for cross-fading icons.
 
 ```kotlin
 @OptIn(ExperimentalMaterial3ExpressiveApi::class)
@@ -1475,40 +1441,48 @@ fun ToggleFabDemo() {
     ToggleFloatingActionButton(
         checked = checked,
         onCheckedChange = { checked = it },
-        containerColor = MaterialTheme.colorScheme.primaryContainer,
-        checkedContainerColor = MaterialTheme.colorScheme.tertiaryContainer,
+        containerColor = ToggleFloatingActionButtonDefaults.containerColor(
+            initialColor = MaterialTheme.colorScheme.primaryContainer,
+            finalColor = MaterialTheme.colorScheme.tertiaryContainer,
+        ),
     ) {
-        val imageVector by animateVectorAsState(
-            if (checked) Icons.Filled.Close else Icons.Filled.Add,
-            label = "fabIcon"
+        // No animateVectorAsState in Compose — cross-fade two icons on progress instead.
+        Icon(
+            painter = rememberVectorPainter(Icons.Filled.Add),
+            contentDescription = null,
+            modifier = Modifier.graphicsLayer { alpha = 1f - checkedProgress },
         )
         Icon(
-            imageVector = imageVector,
-            contentDescription = if (checked) "Close" else "Open"
+            painter = rememberVectorPainter(Icons.Filled.Close),
+            contentDescription = null,
+            modifier = Modifier.graphicsLayer { alpha = checkedProgress },
         )
     }
 }
 ```
 
-### 6.24 TonalToggleButton
+`Modifier.animateIcon({ checkedProgress })` on `ToggleFloatingActionButtonDefaults` is the packaged version of that cross-fade (it takes a `() -> Float` lambda, not the `Float` itself) (it also animates icon colour and size); `containerSizeMedium()` / `containerSizeLarge()` and the matching `containerCornerRadius*()` give the standard size ramps.
 
-A toggle button using tonal (filled tonal) styling.
+### 6.24 FilledTonalToggleButton
+
+A toggle button using tonal (filled tonal) styling. Renamed from `TonalToggleButton` in 1.5.0-alpha25 — the old name still resolves but is `@Deprecated`, is still experimental, and lacks the `buttonSize` / `icon` parameters.
 
 ```kotlin
 @OptIn(ExperimentalMaterial3ExpressiveApi::class)
 @Composable
-fun TonalToggleButtonDemo() {
+fun FilledTonalToggleButtonDemo() {
     var checked by remember { mutableStateOf(false) }
 
-    TonalToggleButton(
+    FilledTonalToggleButton(
         checked = checked,
         onCheckedChange = { checked = it },
+        icon = {
+            Icon(
+                imageVector = if (checked) Icons.Filled.Notifications else Icons.Outlined.Notifications,
+                contentDescription = null,
+            )
+        },
     ) {
-        Icon(
-            imageVector = if (checked) Icons.Filled.Notifications else Icons.Outlined.Notifications,
-            contentDescription = "Notifications"
-        )
-        Spacer(Modifier.width(8.dp))
         Text(if (checked) "On" else "Off")
     }
 }
@@ -1516,7 +1490,7 @@ fun TonalToggleButtonDemo() {
 
 ### 6.25 TwoRowsTopAppBar
 
-A top app bar supporting two rows of content -- title and secondary information.
+A top app bar supporting two rows of content -- title and secondary information. Unlike the flexible bars, its `title` and `subtitle` slots are `@Composable (expanded: Boolean) -> Unit`, so you can render differently in the collapsed and expanded rows; ignoring the parameter (as below) is valid.
 
 ```kotlin
 @OptIn(ExperimentalMaterial3ExpressiveApi::class)
@@ -1573,7 +1547,8 @@ fun VerticalFloatingToolbarDemo() {
                 IconButton(onClick = { }) {
                     Icon(Icons.Default.ZoomOut, "Zoom Out")
                 }
-                VerticalDivider(modifier = Modifier.width(24.dp))
+                // Content is a ColumnScope -> separate rows with HorizontalDivider
+                HorizontalDivider(modifier = Modifier.width(24.dp))
                 IconButton(onClick = { }) {
                     Icon(Icons.Default.Fullscreen, "Fullscreen")
                 }
@@ -1588,13 +1563,13 @@ fun VerticalFloatingToolbarDemo() {
 
 ### 6.27 VerticalSlider
 
-A vertical orientation slider for volume, brightness, or other vertical controls.
+A vertical slider for volume, brightness, or similar controls. It is **state-based only** — there is no `value` / `onValueChange` / `valueRange` overload. Hoist a `SliderState` (`rememberSliderState(value, steps, trackRange)`) and read `state.value`; the `onValueChange` parameter is an optional side-channel, not the source of truth. `topToBottom` flips the direction.
 
 ```kotlin
 @OptIn(ExperimentalMaterial3ExpressiveApi::class)
 @Composable
 fun VerticalSliderDemo() {
-    var sliderValue by remember { mutableFloatStateOf(0.5f) }
+    val sliderState = rememberSliderState(value = 0.5f, trackRange = 0f..1f)
 
     Row(
         verticalAlignment = Alignment.CenterVertically,
@@ -1603,10 +1578,8 @@ fun VerticalSliderDemo() {
         Icon(Icons.Default.VolumeUp, "Volume", modifier = Modifier.size(24.dp))
 
         VerticalSlider(
-            value = sliderValue,
-            onValueChange = { sliderValue = it },
+            state = sliderState,
             modifier = Modifier.height(200.dp),
-            valueRange = 0f..1f,
             colors = SliderDefaults.colors(
                 thumbColor = MaterialTheme.colorScheme.primary,
                 activeTrackColor = MaterialTheme.colorScheme.primary,
@@ -1615,7 +1588,7 @@ fun VerticalSliderDemo() {
         )
 
         Text(
-            text = "${(sliderValue * 100).toInt()}%",
+            text = "${(sliderState.value * 100).toInt()}%",
             style = MaterialTheme.typography.labelMedium
         )
     }
@@ -1706,22 +1679,24 @@ fun ScreenReaderFriendlyComponents() {
 
 ### Reduced Motion Support
 
+Compose has **no `LocalReduceMotion`** on Android (that composition local only exists in Wear Compose). Read the platform setting yourself: Android exposes "Remove animations" as `Settings.Global.ANIMATOR_DURATION_SCALE == 0f`. Hoist it into your own composition local rather than querying it per component.
+
 ```kotlin
+val LocalReduceMotion = staticCompositionLocalOf { false }
+
+@Composable
+fun rememberReduceMotion(): Boolean {
+    val resolver = LocalContext.current.contentResolver
+    return remember(resolver) {
+        Settings.Global.getFloat(resolver, Settings.Global.ANIMATOR_DURATION_SCALE, 1f) == 0f
+    }
+}
+
 @OptIn(ExperimentalMaterial3ExpressiveApi::class)
 @Composable
 fun ReducedMotionAware() {
-    // Check system accessibility setting for reduced motion
-    val reduceMotion = LocalReduceMotion.current
-
+    val reduceMotion = LocalReduceMotion.current      // provided at the theme root
     val motion = MaterialTheme.motionScheme
-
-    val animationSpec = if (reduceMotion) {
-        // Instant or very short animation for reduced motion users
-        snap<Float>()
-    } else {
-        // Full expressive spring animation
-        motion.defaultSpatialSpec<Float>()
-    }
 
     var expanded by remember { mutableStateOf(false) }
 
@@ -1820,64 +1795,9 @@ fun AnimatedItem(item: Item) {
 }
 ```
 
-### Remember Spring Specs
+Add `contentType = { "item" }` alongside `key` so the lazy layout can reuse slots, and hoist per-item animation state (`rememberSwipeToDismissBoxState()`, transition state) inside the item lambda so it is keyed with the item.
 
-```kotlin
-@OptIn(ExperimentalMaterial3ExpressiveApi::class)
-@Composable
-fun RememberSpringSpecs() {
-    // ✅ CORRECT: Remember spring specs to avoid allocation per recomposition
-    val springSpec = remember {
-        spring<Float>(
-            dampingRatio = Spring.DampingRatioMediumBouncy,
-            stiffness = Spring.StiffnessMedium
-        )
-    }
-
-    var expanded by remember { mutableStateOf(false) }
-
-    val size by animateFloatAsState(
-        targetValue = if (expanded) 200f else 100f,
-        animationSpec = springSpec,
-        label = "size"
-    )
-
-    // ❌ WRONG: Creating spring on every recomposition
-    val sizeBad by animateFloatAsState(
-        targetValue = if (expanded) 200f else 100f,
-        animationSpec = spring(   // Allocated every recomposition!
-            dampingRatio = 0.5f,
-            stiffness = 1500f
-        ),
-        label = "sizeBad"
-    )
-}
-```
-
-### Stable Keys for Animated Lists
-
-```kotlin
-@OptIn(ExperimentalMaterial3ExpressiveApi::class)
-@Composable
-fun StableKeyAnimatedList(items: List<Item>) {
-    LazyColumn {
-        items(
-            items = items,
-            key = { it.id },          // ✅ Stable key
-            contentType = { "item" }  // ✅ Content type for recycling
-        ) { item ->
-            // Animations are per-item and preserved across reordering
-            val dismissState = rememberSwipeToDismissBoxState()
-            SwipeToDismissBox(
-                state = dismissState,
-                backgroundContent = { /* delete bg */ }
-            ) {
-                ListItem(headlineContent = { Text(item.title) })
-            }
-        }
-    }
-}
-```
+`remember { spring(...) }` avoids re-allocating the spec on every recomposition. The allocation is small, so this matters mainly in lazy item content; motion-scheme tokens (`motion.defaultSpatialSpec()`) are already cheap to call.
 
 ### Avoiding Recomposition in Animations
 
@@ -1916,9 +1836,13 @@ fun AvoidRecompositionInAnimations() {
         Text("Press me", modifier = Modifier.padding(24.dp))
     }
 
-    // ❌ WRONG: Using Modifier.scale() triggers layout recomposition
+    // ❌ WORSE: Modifier.scale(scale) is graphicsLayer under the hood, so it does
+    // not relayout — but reading `scale` here happens during COMPOSITION, so this
+    // composable recomposes on every animation frame. The lambda form above defers
+    // the read to the draw phase. Same distinction for Modifier.offset(x, y) vs
+    // Modifier.offset { IntOffset(...) }, and .alpha(a) vs graphicsLayer { alpha = a }.
     Card(
-        modifier = Modifier.scale(scale)  // Causes relayout!
+        modifier = Modifier.scale(scale)
     ) {
         Text("Expensive", modifier = Modifier.padding(24.dp))
     }
@@ -1964,37 +1888,28 @@ fun DeferredAnimationReading() {
 
 | # | Mistake | Fix |
 |---|---------|-----|
-| 1 | Missing `@OptIn(ExperimentalMaterial3ExpressiveApi::class)` | Add the opt-in annotation to every composable using expressive APIs. Without it, the code will not compile. |
+| 1 | Wrong opt-in annotation | On 1.5.0-alpha26 only the loading indicators and `MaterialShapes` / `Morph.toPath` / `RoundedPolygon.toShape` need `ExperimentalMaterial3ExpressiveApi`; `AppBarWithSearch` needs `ExperimentalMaterial3Api`. Opting into the wrong one still fails to compile. |
 | 2 | Using `MaterialTheme` instead of `MaterialExpressiveTheme` | Replace with `MaterialExpressiveTheme` to get expressive defaults for motion, shapes, and typography. |
 | 3 | Using duration-based `tween()` for all animations | Use spring-based specs from `MaterialTheme.motionScheme` for physics-based motion. Reserve `tween()` for color and opacity only. |
 | 4 | Creating spring specs inline in composable body | Wrap with `remember { spring(...) }` or use motion scheme tokens to avoid allocation per recomposition. |
-| 5 | Ignoring reduced motion accessibility setting | Check `LocalReduceMotion.current` and fall back to `snap()` or instant transitions for users with motion sensitivity. |
-| 6 | Using `Modifier.scale()` / `Modifier.offset()` for animated transforms | Use `Modifier.graphicsLayer { scaleX = ...; translationY = ... }` to avoid triggering recomposition/relayout on every frame. |
+| 5 | Ignoring reduced motion accessibility setting | There is no `LocalReduceMotion` in Compose for Android. Read `Settings.Global.ANIMATOR_DURATION_SCALE == 0f`, expose it via your own composition local, and fall back to `snap()`. |
+| 6 | Reading an animated `State` in composition (`Modifier.scale(v)`, `Modifier.offset(x, y)`, `.alpha(v)`) | Use the lambda forms — `graphicsLayer { scaleX = v }`, `offset { IntOffset(...) }` — so the read happens in the layout/draw phase instead of recomposing every frame. |
 | 7 | Mixing unpaired color roles (e.g., `primaryContainer` background with `onTertiaryContainer` text) | Always use paired color roles (`primaryContainer` + `onPrimaryContainer`) to guarantee contrast ratios. |
-| 8 | Using standard `lightColorScheme()` with `MaterialExpressiveTheme` | Use `expressiveLightColorScheme()` / `expressiveDarkColorScheme()` for the full expressive palette. |
+| 8 | Calling `expressiveDarkColorScheme()` | It does not exist. Use `expressiveLightColorScheme()` for light and the standard `darkColorScheme()` for dark. |
 | 9 | Forgetting stable keys in animated `LazyColumn` items | Always provide `key = { item.id }` so animations are preserved when items reorder or update. |
 | 10 | Not providing `contentDescription` for animated icons that change state | Add `semantics { stateDescription = ... }` or explicit `contentDescription` to toggle buttons and animated icons. |
 | 11 | Using emphasized typography everywhere | Reserve `*Emphasized` styles for actual emphasis moments (hero titles, section headers, CTAs). Overuse defeats purpose. |
-| 12 | Setting dampingRatio to 0 (undamped spring) | This creates infinite oscillation. Use `DampingRatioLowBouncy` (0.2) as the minimum practical value. |
+| 12 | Setting `dampingRatio` to 0 (undamped spring) | Infinite oscillation. The bounciest preset is `DampingRatioHighBouncy` = `0.2f`; note `DampingRatioLowBouncy` is `0.75f` (least bouncy of the bouncy set), not 0.2f. |
 | 13 | Applying shape morphing to components that clip children | Shape morphing during clip can cause visual artifacts. Use `graphicsLayer { clip = true; shape = ... }` for animated clipping. |
-| 14 | Not testing on API < 31 when using dynamic color | Dynamic color requires Android 12+. Always provide `expressiveLightColorScheme()` / `expressiveDarkColorScheme()` as fallback. |
-
----
-
-## 10. Dribbble Inspiration
-
-Before designing screens with M3 Expressive, search **Dribbble** for inspiration:
-
-- Search: **"Material 3 Expressive"** for the latest design explorations
-- Search: **"Material You expressive"** for color and shape inspiration
-- Search: **"spring animation mobile"** for motion design references
-- Search: **"morphing shapes UI"** for shape transition ideas
-
-Use Dribbble concepts as visual targets, then implement with the M3 Expressive component library and motion tokens documented above. The combination of spring physics, shape morphing, and expressive color creates UIs that are both visually striking and technically sound.
+| 14 | Not testing on API < 31 when using dynamic color | Dynamic color requires Android 12+. Fall back to `expressiveLightColorScheme()` / `darkColorScheme()`. Note that choosing `dynamic*ColorScheme` at all opts out of the expressive baseline palette. |
+| 15 | Assuming any of this is on the stable BOM | Nothing here except `WideNavigationRail` / `ShortNavigationBar` is public in material3 1.4.0 — even `MaterialExpressiveTheme` and the `*Emphasized` styles are `internal`. Use `compose-bom-alpha`. |
+| 16 | Reusing the AOSP `scale(w/2, h/2) + translate(1,1)` morph matrix with `MaterialShapes` | Those polygons are `normalized()` to 0..1, not -1..1. Scale by the full `size.width`/`size.height` with no translate. |
 
 ---
 
 ## Quick Reference: Component Selection Guide
+
+Everything below requires material3 `1.5.0-alpha*` — including the flexible app bars and `VerticalSlider`, which are `internal` in 1.4.0.
 
 | Need | Component |
 |------|-----------|
@@ -2002,7 +1917,7 @@ Use Dribbble concepts as visual targets, then implement with the M3 Expressive c
 | Playful loading state | `CircularWavyProgressIndicator`, `LinearWavyProgressIndicator` |
 | Inline loading | `ContainedLoadingIndicator`, `LoadingIndicator` |
 | Organized dropdown | `DropdownMenuGroup`, `DropdownMenuPopup` |
-| Toggle with emphasis | `ToggleButton`, `TonalToggleButton`, `OutlinedToggleButton`, `ElevatedToggleButton` |
+| Toggle with emphasis | `ToggleButton`, `FilledTonalToggleButton`, `OutlinedToggleButton`, `ElevatedToggleButton` |
 | Expandable search | `ExpandedDockedSearchBarWithGap` |
 | Flexible app bars | `FlexibleBottomAppBar`, `MediumFlexibleTopAppBar`, `LargeFlexibleTopAppBar`, `TwoRowsTopAppBar` |
 | Expandable FAB | `FloatingActionButtonMenu` + `FloatingActionButtonMenuItem` |

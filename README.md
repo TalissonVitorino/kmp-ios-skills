@@ -1,11 +1,11 @@
 # kmp-ios-skills
 
-**105 agent skills for Kotlin Multiplatform and iOS development.** Built for a KMP + iOS stack where Android is a KMP target — not the other way around.
+**108 agent skills for Kotlin Multiplatform and iOS development.** Built for a KMP + iOS stack where Android is a KMP target — not the other way around.
 
 Every skill is a plain `SKILL.md`: procedural knowledge an agent loads *only when the task calls for it*. Works with Claude Code, Codex, Cursor, Copilot, Gemini and [75+ other agents](https://github.com/vercel-labs/skills#supported-agents) via the `skills` CLI.
 
 ```bash
-# everything (105 skills)
+# everything (108 skills)
 npx skills add TalissonVitorino/kmp-ios-skills
 
 # just one area
@@ -23,11 +23,11 @@ npx skills add TalissonVitorino/kmp-ios-skills/ios/swiftui-expert-skill
 |:---|---:|:---|
 | [`ios/`](ios) | 48 | Swift, SwiftUI, Apple frameworks, security, on-device AI, profiling, App Store |
 | [`kmp/`](kmp) | 15 | Shared layer, DI, Ktor, SQLDelight, iOS framework export, money |
-| [`android/`](android) | 24 | Compose, Gradle/AGP, Perfetto, Play, CameraX, R8 |
+| [`android/`](android) | 27 | Compose, Gradle/AGP, profiling, Play, CameraX, R8, credentials |
 | [`cross-platform/`](cross-platform) | 14 | Navigation, architecture, security, a11y, i18n, offline-first |
 | [`workflow/`](workflow) | 4 | Feature flow, checkpoints, commit hygiene, pre-merge verification |
 
-Prefer per-area installs. Skill *descriptions* are always in the agent's context (that's how routing works) — installing all 105 costs ~8–10k tokens of permanent index. One area costs a fraction of that, and skill *bodies* only load when invoked.
+Prefer per-area installs. Skill *descriptions* are always in the agent's context (that's how routing works) — installing all 108 costs ~8–10k tokens of permanent index. One area costs a fraction of that, and skill *bodies* only load when invoked.
 
 ---
 
@@ -138,8 +138,11 @@ Prefer per-area installs. Skill *descriptions* are always in the agent's context
 | Analyze/optimize R8 keep rules | `r8-analyzer` |
 | CameraX (capture, recording lifecycle, ML Kit interop) | `camerax` |
 | `android` CLI (projects, devices/AVDs, SDK, docs) | `android-cli` |
-| Query a Perfetto trace with SQL | `perfetto-sql` |
-| Root-cause jank/latency/memory from a trace | `perfetto-trace-analysis` |
+| End-to-end profiling — record traces/heap dumps + guided analysis | `android-profiler` |
+| Query a Perfetto trace with SQL — quick standalone | `perfetto-sql` |
+| Root-cause jank/latency/memory from an existing trace — quick standalone | `perfetto-trace-analysis` |
+| Silent re-sign-in after device restore (Restore Credentials) | `restore-credentials` |
+| OTP-less verified email sign-up (Credential Manager) | `verified-email` |
 | Google Play Billing upgrade | `play-billing-upgrade` |
 | Audit Intent security (redirection, exported components) | `android-intent-security` |
 | Audit against Google Play policies | `play-policy-insights` |
@@ -189,9 +192,9 @@ Versions pinned in the skills (Ktor, AGP, Compose BOM, Kotlin, SQLDelight…) we
 This repository is MIT. It bundles work from several sources, all under permissive licenses — see [NOTICE.md](NOTICE.md) for the full attribution.
 
 - **34 skills written from scratch** and adversarially verified against Apple's official documentation (every API symbol checked by an independent pass): the iOS framework set, `swift-security`, `kmp-money`, `kmp-tls-pinning`, `android-device-integrity`, `mobile-session-security`.
-- **Google's [android/skills](https://github.com/android/skills)** (Apache-2.0): `camerax`, `compose-theming-styles`, `perfetto-sql`, `perfetto-trace-analysis`, `android-cli`, `play-billing-upgrade`, `android-intent-security`, `play-policy-insights`, `compose-adaptive`, `edge-to-edge`, `r8-analyzer`, `agp-9-upgrade`, plus the Navigation 3 recipes inside `navigation`.
+- **Google's [android/skills](https://github.com/android/skills)** (Apache-2.0): `camerax`, `compose-theming-styles`, `perfetto-sql`, `perfetto-trace-analysis`, `android-cli`, `play-billing-upgrade`, `android-intent-security`, `play-policy-insights`, `compose-adaptive`, `edge-to-edge`, `r8-analyzer`, `agp-9-upgrade`, `android-profiler`, `restore-credentials`, `verified-email`, plus the Navigation 3 recipes inside `navigation`.
 - **[avdlee/swiftui-agent-skill](https://github.com/avdlee/swiftui-agent-skill)** (MIT): `swiftui-expert-skill`.
-- **[ahmed3elshaer/everything-claude-code-mobile](https://github.com/ahmed3elshaer/everything-claude-code-mobile)** (MIT): the cross-platform and Android pattern skills, refreshed here — dependency versions bumped, dead APIs replaced, compile-blocking samples fixed.
+- **[ahmed3elshaer/everything-claude-code-mobile](https://github.com/ahmed3elshaer/everything-claude-code-mobile)** (MIT): the cross-platform and Android pattern skills. Substantially reworked here: every one was audited against official documentation by an independent verification pass, which replaced hallucinated and dead APIs, corrected component signatures and version gates, and fixed samples that could not compile.
 - **[affaan-m/everything-claude-code](https://github.com/affaan-m/everything-claude-code)** (MIT): `swift-concurrency-6-2`, `swift-protocol-di-testing`, `ios-icon-gen`.
 - **[getsentry/sentry-skills](https://github.com/getsentry/sentry-skills)** (Apache-2.0): `sentry-fix-issues`.
 

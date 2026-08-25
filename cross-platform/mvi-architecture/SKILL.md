@@ -5,9 +5,7 @@ description: Model-View-Intent architecture patterns for Android with unidirecti
 
 # MVI Architecture
 
-Unidirectional data flow architecture for Android.
-
-## Core Concepts
+Unidirectional data flow architecture for Android and Compose Multiplatform.
 
 ```
 Intent → ViewModel → State → UI
@@ -15,13 +13,19 @@ Intent → ViewModel → State → UI
    └────────────────────────┘
 ```
 
+Everything below compiles in `commonMain`: `ViewModel`/`viewModelScope`, `collectAsStateWithLifecycle`, and `repeatOnLifecycle` all have `commonMain` declarations. Mind the group id — a Compose Multiplatform module consumes the JetBrains-published build, `org.jetbrains.androidx.lifecycle:lifecycle-viewmodel` / `:lifecycle-runtime-compose` (2.11.0); an Android-only module consumes `androidx.lifecycle:*`. AndroidX's own artifacts are multiplatform too, but `lifecycle-runtime-compose` only started publishing Native/Wasm klibs at 2.9.3, while `lifecycle-viewmodel` and `lifecycle-runtime` have shipped them since 2.8.0.
+
+DI wiring: `kmp-di` / `android-di-koin`. `Result` mapping: `error-handling-result`. Test tooling: `mobile-testing`.
+
 ## State
+
+One data class per screen, all fields with defaults so the initial value is `HomeState()`.
 
 ```kotlin
 @Immutable
 data class HomeState(
     val isLoading: Boolean = false,
-    val items: List<Item> = emptyList(),
+    val items: ImmutableList<Item> = persistentListOf(),
     val error: ErrorState? = null,
     val searchQuery: String = ""
 ) {
@@ -32,15 +36,17 @@ data class HomeState(
 }
 ```
 
+`@Immutable` is an unchecked promise: the Compose compiler trusts it and skips recomposition when the instance compares equal. A plain `List<Item>` satisfies that only if nobody mutates the backing list — an `ArrayList` handed over from a repository breaks it silently. Use `ImmutableList`/`persistentListOf()` from `org.jetbrains.kotlinx:kotlinx-collections-immutable`, or drop the annotation.
+
 ## Intent
 
 ```kotlin
 sealed interface HomeIntent {
-    object LoadItems : HomeIntent
-    object Refresh : HomeIntent
+    data object LoadItems : HomeIntent
+    data object Refresh : HomeIntent
     data class Search(val query: String) : HomeIntent
     data class ItemClicked(val id: String) : HomeIntent
-    object ClearError : HomeIntent
+    data object ClearError : HomeIntent
 }
 ```
 
@@ -50,9 +56,11 @@ sealed interface HomeIntent {
 sealed interface HomeSideEffect {
     data class NavigateToDetail(val itemId: String) : HomeSideEffect
     data class ShowSnackbar(val message: String) : HomeSideEffect
-    object NavigateToLogin : HomeSideEffect
+    data object NavigateToLogin : HomeSideEffect
 }
 ```
+
+Side effects are for things that must happen exactly once and cannot be re-derived from state (navigation, snackbars, sharesheets). Anything the UI can render from state — an error banner, a spinner — belongs in `HomeState`, not here. `receiveAsFlow()` is single-consumer: a second collector steals events, so collect it in exactly one place.
 
 ## ViewModel
 
@@ -66,6 +74,10 @@ class HomeViewModel(
 
     private val _sideEffects = Channel<HomeSideEffect>(Channel.BUFFERED)
     val sideEffects: Flow<HomeSideEffect> = _sideEffects.receiveAsFlow()
+
+    init {
+        onIntent(HomeIntent.LoadItems)
+    }
 
     fun onIntent(intent: HomeIntent) {
         when (intent) {
@@ -87,7 +99,9 @@ class HomeViewModel(
             
             getItemsUseCase()
                 .onSuccess { items ->
-                    _state.update { it.copy(isLoading = false, items = items, error = null) }
+                    _state.update {
+                        it.copy(isLoading = false, items = items.toImmutableList(), error = null)
+                    }
                 }
                 .onFailure { error ->
                     _state.update { it.copy(isLoading = false, error = mapError(error)) }
@@ -95,6 +109,12 @@ class HomeViewModel(
         }
     }
     
+    // Text input goes into state on every keystroke so the field stays
+    // responsive; debounce the query in a separate flow, not per keystroke.
+    private fun search(query: String) {
+        _state.update { it.copy(searchQuery = query) }
+    }
+
     private fun mapError(error: Throwable): HomeState.ErrorState {
         return when (error) {
             is UnauthorizedException -> HomeState.ErrorState.Unauthorized
@@ -115,21 +135,23 @@ fun HomeScreen(
 ) {
     val state by viewModel.state.collectAsStateWithLifecycle()
     val snackbarHostState = remember { SnackbarHostState() }
-    
-    // Handle side effects
-    LaunchedEffect(Unit) {
-        viewModel.sideEffects.collect { effect ->
-            when (effect) {
-                is HomeSideEffect.NavigateToDetail -> onNavigateToDetail(effect.itemId)
-                is HomeSideEffect.ShowSnackbar -> snackbarHostState.showSnackbar(effect.message)
-                is HomeSideEffect.NavigateToLogin -> onNavigateToLogin()
+    val lifecycle = LocalLifecycleOwner.current.lifecycle
+
+    // Collect side effects only while STARTED, so navigation never fires on a
+    // stopped screen. The Channel holds whatever is sent while collection is
+    // suspended and delivers it when the screen restarts.
+    // No LoadItems dispatch here: the ViewModel's init already triggers the
+    // initial load, and dispatching again on composition would double-load.
+    LaunchedEffect(lifecycle) {
+        lifecycle.repeatOnLifecycle(Lifecycle.State.STARTED) {
+            viewModel.sideEffects.collect { effect ->
+                when (effect) {
+                    is HomeSideEffect.NavigateToDetail -> onNavigateToDetail(effect.itemId)
+                    is HomeSideEffect.ShowSnackbar -> snackbarHostState.showSnackbar(effect.message)
+                    is HomeSideEffect.NavigateToLogin -> onNavigateToLogin()
+                }
             }
         }
-    }
-    
-    // Load data
-    LaunchedEffect(Unit) {
-        viewModel.onIntent(HomeIntent.LoadItems)
     }
     
     HomeContent(
@@ -148,36 +170,64 @@ private fun HomeContent(
     Scaffold(
         snackbarHost = { SnackbarHost(snackbarHostState) }
     ) { padding ->
-        when {
-            state.isLoading -> LoadingIndicator()
-            state.error != null -> ErrorContent(
-                error = state.error,
-                onRetry = { onIntent(HomeIntent.LoadItems) }
-            )
-            else -> ItemList(
-                items = state.items,
-                onItemClick = { onIntent(HomeIntent.ItemClicked(it)) }
-            )
+        Box(Modifier.padding(padding)) {
+            // Local val: `state.error` does not smart-cast to non-null when
+            // HomeState lives in a different module.
+            val error = state.error
+            when {
+                state.isLoading -> LoadingIndicator()
+                error != null -> ErrorContent(
+                    error = error,
+                    onRetry = { onIntent(HomeIntent.LoadItems) }
+                )
+                else -> ItemList(
+                    items = state.items,
+                    onItemClick = { onIntent(HomeIntent.ItemClicked(it)) }
+                )
+            }
         }
     }
 }
 ```
 
+Imports that are easy to get wrong:
+
+- `androidx.lifecycle.compose.LocalLifecycleOwner` — moved out of `androidx.compose.ui.platform` in Lifecycle 2.8; the Compose UI one is deprecated.
+- `androidx.lifecycle.compose.collectAsStateWithLifecycle` and `androidx.lifecycle.repeatOnLifecycle` — `lifecycle-runtime-compose` / `lifecycle-runtime`, both multiplatform.
+- `org.koin.compose.viewmodel.koinViewModel` from `io.insert-koin:koin-compose-viewmodel` for shared code; Android-only modules may instead use `org.koin.androidx.compose.koinViewModel` from `koin-androidx-compose`.
+
+`HomeContent` takes only `state` + `onIntent`, so it previews and tests without a ViewModel. Keep the ViewModel out of every composable below the screen root.
+
 ## Testing
 
+`viewModelScope` runs on `Dispatchers.Main`, so replace it with a test dispatcher; `runTest` then reuses that dispatcher's scheduler, so virtual time is shared. StateFlow conflates rapid emissions: when the use case returns without suspending, the transient `isLoading = true` value is overwritten before the collector resumes — assert the settled state, not intermediates.
+
 ```kotlin
+private val getItemsUseCase = mockk<GetItemsUseCase>()
+
+@BeforeEach
+fun setUp() {
+    Dispatchers.setMain(StandardTestDispatcher())
+}
+
+@AfterEach
+fun tearDown() {
+    Dispatchers.resetMain()
+}
+
 @Test
 fun `when LoadItems succeeds, state contains items`() = runTest {
     val items = listOf(Item("1", "Test"))
     coEvery { getItemsUseCase() } returns Result.success(items)
-    
+
+    val viewModel = HomeViewModel(getItemsUseCase) // init dispatches LoadItems
+
     viewModel.state.test {
-        awaitItem() // Initial
-        
-        viewModel.onIntent(HomeIntent.LoadItems)
-        
-        awaitItem().isLoading shouldBe true
-        awaitItem().items shouldBe items
+        awaitItem() // initial HomeState()
+
+        val loaded = awaitItem() // conflated final state
+        loaded.isLoading shouldBe false
+        loaded.items shouldBe items
     }
 }
 ```

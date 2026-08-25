@@ -7,7 +7,7 @@ description: End-to-end workflow to take a mobile feature from idea to verified 
 
 A structured 6-phase path for building a mobile feature end to end. This is a **workflow guide** — it sequences the real skills/agents you already have; it does **not** call external `/feature-*` pipeline commands.
 
-> **Platform auto-detect:** `shared/src/commonMain/` → **KMP** · `*.xcodeproj` / `*.xcworkspace` → **iOS** · root `build.gradle(.kts)` with an android block → **Android**. Ambiguous → ask.
+> **Platform auto-detect:** `shared/src/commonMain/` → **KMP** · `*.xcodeproj` / `*.xcworkspace` → **iOS** · a module `build.gradle(.kts)` applying `com.android.application` → **Android**. Ambiguous → ask.
 
 ## The six phases
 
@@ -15,7 +15,7 @@ A structured 6-phase path for building a mobile feature end to end. This is a **
 |---|---|---|
 | 1 | **Plan** | `superpowers:brainstorming` → `superpowers:writing-plans` (or the `Plan` agent). Output: module breakdown, file list, task order. |
 | 2 | **Implement (by layer)** | Build in dependency order, pulling the matching library skill per layer (below). Drive with `superpowers:test-driven-development`. |
-| 3 | **Test** | Unit + UI + E2E. `mobile-testing` (Android/JVM) · `ios-testing` (iOS) · depth: `android-skills:android-tdd`. |
+| 3 | **Test** | Unit + UI + E2E. `mobile-testing` (Android/JVM) · `ios-testing` (iOS) · depth: `android-skills:android-testing`. |
 | 4 | **Build & fix** | Compile + run tests, fix in a loop (cap ~5 iterations, then escalate). Debug via `android-skills:android-debugging`. |
 | 5 | **Review** | `superpowers:requesting-code-review`, or the `feature-dev:code-reviewer` / `pr-review-toolkit` agents. Block on security & correctness. |
 | 6 | **Verify** | Run the tests for real, confirm coverage/behaviour, re-run to catch flakiness. `superpowers:verification-before-completion`. |
@@ -38,7 +38,7 @@ domain  →  (network ∥ ui)  →  data  →  wiring
 | Domain | Kotlin data classes | Swift structs | commonMain models (`shared-models`) |
 | Network | Retrofit / Ktor | URLSession | Ktor shared (`kmp-networking`) |
 | UI | Compose + ViewModel | SwiftUI + `@Observable` | Compose MP / SwiftUI |
-| Data | Room / DataStore | SwiftData / Core Data | SQLDelight |
+| Data | Room / DataStore | SwiftData / Core Data | SQLDelight, or Room KMP (2.8.x: Android/iOS/JVM/native from `commonMain`, needs `androidx.sqlite:sqlite-bundled`) |
 | Wiring | Koin/Hilt + Navigation | container + NavigationStack | Koin + shared nav |
 
 ## Build & verify commands
@@ -46,8 +46,11 @@ domain  →  (network ∥ ui)  →  data  →  wiring
 | | Compile | Unit | UI / Instrumented |
 |---|---|---|---|
 | Android | `./gradlew assembleDebug` | `./gradlew test` | `./gradlew connectedAndroidTest` |
-| iOS | `xcodebuild build` | `xcodebuild test` | `xcodebuild test -testPlan UITests` |
-| KMP | `./gradlew build` | `./gradlew allTests` | platform-specific |
+| iOS | `xcodebuild build -scheme App` | `xcodebuild test -scheme App -destination 'platform=iOS Simulator,name=iPhone 17'` | same, `-testPlan UITests` |
+| KMP | `./gradlew assemble` | `./gradlew check` | platform-specific |
+
+- **KMP:** `allTests` aggregates common/native/JVM tests but **not** the Android unit tests — AGP owns those (`testDebugUnitTest`), and its reports are not merged into the `allTests` report. Use `check` (or `allTests` + `testDebugUnitTest`) to cover both. `build` = `assemble` + `check`, so it compiles *and* tests.
+- **iOS:** pass `-workspace App.xcworkspace` (or `-project App.xcodeproj`) — `xcodebuild` only auto-resolves a lone `.xcodeproj` in the working directory.
 
 ## Acceptance criteria
 

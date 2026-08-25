@@ -26,30 +26,37 @@ actual class Platform {
 }
 ```
 
+> **Beta note:** expect/actual *classes* (and objects/interfaces/enums/actual typealiases) are still Beta in Kotlin 2.x — the compiler warns unless you add `freeCompilerArgs.add("-Xexpect-actual-classes")`. Expect functions and properties are stable. For anything beyond a thin platform shim, prefer a common interface + `expect` factory function; see android-skills:kmp-boundaries for choosing the boundary shape.
+
 ## Common Patterns
 
 ### 1. Platform Information
 
 ```kotlin
-// commonMain
-expect object Platform {
+// commonMain — a singleton, so `expect object`; named PlatformInfo because
+// the `expect class Platform()` above already occupies that name in the package
+expect object PlatformInfo {
     val name: String
     val version: String
     val isDebug: Boolean
 }
 
 // androidMain
-actual object Platform {
+actual object PlatformInfo {
     actual val name: String = "Android"
     actual val version: String = "${Build.VERSION.SDK_INT}"
+    // BuildConfig needs buildFeatures.buildConfig = true (off by default in AGP 8+;
+    // not generated at all by the AGP KMP library plugin)
     actual val isDebug: Boolean = BuildConfig.DEBUG
 }
 
 // iosMain
-actual object Platform {
+// kotlin.native.Platform is annotated @ExperimentalNativeApi (whole object)
+@OptIn(kotlin.experimental.ExperimentalNativeApi::class)
+actual object PlatformInfo {
     actual val name: String = "iOS"
     actual val version: String = UIDevice.currentDevice.systemVersion
-    actual val isDebug: Boolean = KotlinLifecycleController.isDebug
+    actual val isDebug: Boolean = kotlin.native.Platform.isDebugBinary
 }
 ```
 
@@ -63,8 +70,9 @@ expect class FileSystem {
     fun getTempPath(): String
 }
 
-// androidMain
-actual class FileSystem {
+// androidMain — actuals may add constructors the expect doesn't declare;
+// construct per platform and inject (e.g. via Koin)
+actual class FileSystem(private val context: Context) {
     actual fun getDocumentsPath(): String {
         return context.filesDir.absolutePath
     }
@@ -100,9 +108,12 @@ actual class FileSystem {
 
 ### 3. Date/Time Operations
 
+Prefer kotlinx-datetime in commonMain (`kotlin.time.Instant`, `LocalDateTime.Format` — no expect/actual needed). Use expect/actual only for locale-aware platform formatting:
+
 ```kotlin
-// commonMain
-expect class DateTimeFormatter {
+// commonMain — declare the () constructor: expect classes have no implicit
+// constructor, and without one common code cannot instantiate the class
+expect class DateTimeFormatter() {
     fun format(timestamp: Long): String
     fun parse(dateString: String): Long
     fun now(): Long
@@ -110,6 +121,7 @@ expect class DateTimeFormatter {
 
 // androidMain
 actual class DateTimeFormatter {
+    // SimpleDateFormat is not thread-safe — keep the instance confined
     private val format = SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.getDefault())
 
     actual fun format(timestamp: Long): String {
@@ -117,7 +129,8 @@ actual class DateTimeFormatter {
     }
 
     actual fun parse(dateString: String): Long {
-        return format.parse(dateString)?.time ?: 0L
+        // DateFormat.parse(String) throws ParseException on bad input (never returns null)
+        return runCatching { format.parse(dateString)?.time }.getOrNull() ?: 0L
     }
 
     actual fun now(): Long = System.currentTimeMillis()
@@ -182,11 +195,12 @@ expect class SecureStorage {
 }
 
 // androidMain
-// ⚠️ DEPRECATED (2024+): Jetpack Security Crypto (MasterKey / EncryptedSharedPreferences)
-// is deprecated. For a fintech app prefer Android Keystore-backed encryption:
-// generate an AES-GCM key via KeyGenParameterSpec (setUserAuthenticationRequired(true)
-// to biometric-gate sensitive secrets) and store ciphertext in plain DataStore, or use
-// EncryptedFile. Snippet kept as a legacy reference only. See the mobile-security skill.
+// ⚠️ DEPRECATED: androidx.security:security-crypto was deprecated wholesale in
+// 1.1.0-alpha07 (April 2025) — MasterKey, EncryptedSharedPreferences AND
+// EncryptedFile. Prefer Android Keystore-backed encryption: generate an AES-GCM key
+// via KeyGenParameterSpec (setUserAuthenticationRequired(true) to biometric-gate
+// sensitive secrets) and store the ciphertext in plain DataStore, or encrypt with
+// Tink. Snippet kept as a legacy reference only. See the mobile-security skill.
 actual class SecureStorage(private val context: Context) {
     private val masterKey = MasterKey.Builder(context)
         .setKeyScheme(MasterKey.KeyScheme.AES256_GCM)
@@ -213,6 +227,8 @@ actual class SecureStorage(private val context: Context) {
 
 // iosMain
 actual class SecureStorage {
+    // KeychainHelper = your wrapper over the Security framework
+    // (SecItemAdd/SecItemCopyMatching with kSecClassGenericPassword)
     private val keychain = KeychainHelper()
 
     actual suspend fun save(key: String, value: String) {
@@ -255,10 +271,10 @@ actual class ConnectivityMonitor(private val context: Context) {
 
     actual fun startMonitoring() {
         val cm = context.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
-        cm.registerNetworkCallback(
-            NetworkRequest.Builder().build(),
-            callback
-        )
+        // Track the default network. registerNetworkCallback with an empty
+        // NetworkRequest fires onLost per network — dropping Wi-Fi while
+        // cellular is still up would falsely report offline.
+        cm.registerDefaultNetworkCallback(callback)
     }
 
     actual fun stopMonitoring() {
@@ -267,23 +283,29 @@ actual class ConnectivityMonitor(private val context: Context) {
     }
 }
 
-// iosMain
+// iosMain — the Swift NWPathMonitor class is not exposed to Kotlin/Native;
+// use the Network.framework C API from platform.Network + platform.darwin.
+// Those are cinterop declarations, and the ExperimentalForeignApi opt-in is
+// error-level — without it the file does not compile. (platform.Foundation
+// and platform.UIKit, used above, are exempt.)
+@OptIn(kotlinx.cinterop.ExperimentalForeignApi::class)
 actual class ConnectivityMonitor {
     private val _isOnline = MutableStateFlow(true)
     actual val isOnline: StateFlow<Boolean> = _isOnline.asStateFlow()
 
-    private val monitor = NWPathMonitor()
-    private val queue = dispatch_queue_create("network", null)
+    private val monitor = nw_path_monitor_create()
+    private val queue = dispatch_queue_create("network.monitor", null)
 
     actual fun startMonitoring() {
-        monitor.pathUpdateHandler = { path ->
-            _isOnline.value = path?.status == nw_path_status_satisfied
+        nw_path_monitor_set_update_handler(monitor) { path ->
+            _isOnline.value = nw_path_get_status(path) == nw_path_status_satisfied
         }
-        monitor.start(queue)
+        nw_path_monitor_set_queue(monitor, queue)
+        nw_path_monitor_start(monitor)
     }
 
     actual fun stopMonitoring() {
-        monitor.cancel()
+        nw_path_monitor_cancel(monitor)
     }
 }
 ```
@@ -294,7 +316,7 @@ actual class ConnectivityMonitor {
 // commonMain
 enum class LogLevel { DEBUG, INFO, WARN, ERROR }
 
-expect class Logger {
+expect class Logger() {
     fun log(level: LogLevel, tag: String, message: String, throwable: Throwable?)
 }
 
@@ -323,7 +345,7 @@ actual class Logger {
 
 ## Best practices
 
-**Do:** keep `expect` declarations simple (no bodies) · use factory functions for platform dependencies · group related functionality into one `expect` class · provide defaults where possible.
+**Do:** keep `expect` declarations simple (no bodies) · use factory functions for platform dependencies · group related functionality into one `expect` class · declare default parameter values on the `expect` side (actuals must not repeat them).
 
 **Don't:** put complex logic in an `expect` declaration (won't compile) · use expect/actual for pure-Kotlin logic (put it in commonMain) · create many tiny `expect` classes (consolidate into one service).
 
@@ -336,7 +358,7 @@ shared/
 │       └── com/example/platform/
 │           ├── Platform.kt          (expect class Platform)
 │           ├── FileSystem.kt        (expect class FileSystem)
-│           └── DatabasePath.kt      (expect class DatabasePath)
+│           └── DatabasePath.kt      (expect class DatabasePathProvider)
 ├── androidMain/
 │   └── kotlin/
 │       └── com/example/platform/
@@ -359,11 +381,12 @@ shared/
 ## Testing with expect/actual
 
 ```kotlin
-// commonTest
+// commonTest — camelCase names: backticked names with spaces
+// are not portable to all targets
 class PlatformTest {
     @Test
-    fun `platform name is not empty`() {
-        assertTrue(Platform.name.isNotEmpty())
+    fun platformNameIsNotEmpty() {
+        assertTrue(PlatformInfo.name.isNotEmpty())
     }
 }
 

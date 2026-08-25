@@ -23,7 +23,8 @@ description: Localization patterns for mobile - string resources, plurals, RTL s
     </string-array>
 
     <plurals name="items_count">
-        <item quantity="zero">No items</item>
+        <!-- "zero"/"two" only apply where the language's CLDR rules define
+             them (e.g. Arabic). For English, count 0 resolves to "other". -->
         <item quantity="one">%d item</item>
         <item quantity="other">%d items</item>
     </plurals>
@@ -85,11 +86,11 @@ fun WelcomeScreen(userName: String, itemCount: Int) {
 
 ### Per-App Language Preference (API 33+)
 
-```kotlin
-// AndroidManifest.xml
+```xml
+<!-- AndroidManifest.xml -->
 <application android:localeConfig="@xml/locales_config" ...>
 
-// res/xml/locales_config.xml
+<!-- res/xml/locales_config.xml -->
 <?xml version="1.0" encoding="utf-8"?>
 <locale-config xmlns:android="http://schemas.android.com/apk/res/android">
     <locale android:name="en" />
@@ -100,14 +101,16 @@ fun WelcomeScreen(userName: String, itemCount: Int) {
 ```
 
 ```kotlin
-// Programmatic language change
-val localeManager = context.getSystemService(LocaleManager::class.java)
-localeManager.applicationLocales = LocaleList(Locale.forLanguageTag("es"))
-
-// For pre-API 33 with AppCompat
+// Preferred: AppCompat path works on ALL API levels (delegates to the
+// framework on 33+). Requires appcompat 1.6.0+; for persistence pre-33 add
+// the AppLocalesMetadataHolderService entry with autoStoreLocales=true.
 AppCompatDelegate.setApplicationLocales(
     LocaleListCompat.forLanguageTags("es")
 )
+
+// Framework API (33+ only)
+val localeManager = context.getSystemService(LocaleManager::class.java)
+localeManager.applicationLocales = LocaleList(Locale.forLanguageTag("es"))
 ```
 
 ### RTL Layout Support
@@ -128,19 +131,20 @@ AppCompatDelegate.setApplicationLocales(
 // Compose RTL
 @Composable
 fun AdaptiveLayout() {
-    val layoutDirection = LocalLayoutDirection.current
-    val isRtl = layoutDirection == LayoutDirection.Rtl
-
     Row(
         modifier = Modifier.padding(start = 16.dp, end = 8.dp)
         // start/end automatically flip in RTL
     ) {
+        // AutoMirrored icons flip themselves in RTL — no manual check.
+        // (Icons.Default.ArrowBack/ArrowForward are deprecated in their favor.)
         Icon(
-            imageVector = if (isRtl) Icons.Default.ArrowBack else Icons.Default.ArrowForward,
+            imageVector = Icons.AutoMirrored.Filled.ArrowForward,
             contentDescription = null
         )
         Text(text = stringResource(R.string.next))
     }
+    // For assets with no AutoMirrored variant:
+    // val isRtl = LocalLayoutDirection.current == LayoutDirection.Rtl
 }
 ```
 
@@ -167,12 +171,12 @@ fun AdaptiveLayout() {
 
 ### String Catalogs (.xcstrings - Xcode 15+)
 
-Xcode 15 introduces String Catalogs (`.xcstrings`) as a single JSON file replacing `.strings` and `.stringsdict`. Xcode auto-extracts localizable strings from code and manages translations in one place.
+String Catalogs (`.xcstrings`) are the standard format: a single JSON file replacing `.strings` and `.stringsdict`. Xcode auto-extracts localizable strings from code at build time and handles plurals natively ("Vary by Plural" on a string). Xcode migrates legacy files via Editor > Migrate to String Catalog. Prefer this for new code; `.strings`/`.stringsdict` below remain valid for existing projects.
 
 ### String(localized:) and NSLocalizedString
 
 ```swift
-// Modern (iOS 16+)
+// Modern (iOS 15+)
 let welcome = String(localized: "welcome_message")
 
 // With arguments
@@ -241,18 +245,19 @@ let text = String(format: NSLocalizedString("items_count", comment: ""), itemCou
 
 ```swift
 struct AdaptiveRow: View {
-    @Environment(\.layoutDirection) var layoutDirection
-
     var body: some View {
         HStack {
             // leading/trailing automatically respect RTL
             Text("Label")
             Spacer()
-            Image(systemName: layoutDirection == .rightToLeft
-                ? "chevron.left" : "chevron.right")
+            // Use direction-aware SF Symbols (.forward/.backward) —
+            // they flip automatically in RTL. chevron.right does not.
+            Image(systemName: "chevron.forward")
         }
         .padding(.leading, 16)
         .padding(.trailing, 8)
+        // For custom assets: read @Environment(\.layoutDirection)
+        // or use .flipsForRightToLeftLayoutDirection(true)
     }
 }
 ```
@@ -264,7 +269,10 @@ struct AdaptiveRow: View {
 ### Common Interface with expect/actual
 
 ```kotlin
-// commonMain
+// commonMain. expect/actual *classes* are still Beta: the compiler warns unless
+// -Xexpect-actual-classes is set (a plain interface + platform impls avoids it).
+// No constructor is declared, so common code cannot call StringProvider() —
+// K2 rejects it with "does not have default constructor". Inject it instead.
 expect class StringProvider {
     fun getString(key: String): String
     fun getString(key: String, vararg args: Any): String
@@ -289,7 +297,15 @@ actual class StringProvider(private val context: Context) {
     }
 }
 
-// iosMain
+// iosMain — String.format is JVM-only; it does not exist in Kotlin/Native.
+// Use NSString.stringWithFormat. Caveat: Kotlin cannot spread an array into
+// an ObjC variadic (KT-42925), so dispatch on arity. iOS templates use
+// ObjC specifiers (%@, %d) — not Java's %1$s. This specifier mismatch is
+// the main reason to prefer moko-resources, which formats in commonMain.
+import platform.Foundation.NSBundle
+import platform.Foundation.NSString
+import platform.Foundation.stringWithFormat
+
 actual class StringProvider {
     actual fun getString(key: String): String {
         return NSBundle.mainBundle.localizedStringForKey(key, value = key, table = null)
@@ -297,12 +313,19 @@ actual class StringProvider {
 
     actual fun getString(key: String, vararg args: Any): String {
         val template = getString(key)
-        return String.format(template, *args)
+        return when (args.size) {
+            0 -> template
+            1 -> NSString.stringWithFormat(template, args[0])
+            2 -> NSString.stringWithFormat(template, args[0], args[1])
+            3 -> NSString.stringWithFormat(template, args[0], args[1], args[2])
+            else -> error("Unsupported arg count ${args.size}")
+        }
     }
 
     actual fun getPluralString(key: String, quantity: Int, vararg args: Any): String {
-        val template = getString(key)
-        return String.format(template, *args)
+        // Plural selection happens inside stringWithFormat when the key
+        // resolves through a .stringsdict / String Catalog plural rule.
+        return getString(key, quantity, *args)
     }
 }
 ```
@@ -310,16 +333,27 @@ actual class StringProvider {
 ### moko-resources Library Pattern
 
 ```kotlin
-// build.gradle.kts
-commonMain {
-    dependencies {
-        implementation("dev.icerock.moko:resources:0.26.0") // latest 0.26.x — or prefer Compose Multiplatform resources (see compose-resources)
-    }
+// build.gradle.kts — or prefer Compose Multiplatform resources (see compose-resources)
+plugins {
+    id("dev.icerock.mobile.multiplatform-resources") version "0.26.4"
 }
 
-// commonMain/resources/MR/base/strings.xml
-// commonMain/resources/MR/es/strings.xml
-// Access: MR.strings.welcome_message.getString()
+kotlin.sourceSets.commonMain.dependencies {
+    api("dev.icerock.moko:resources:0.26.4") // api, so the iOS framework exports MR
+}
+
+multiplatformResources {
+    resourcesPackage.set("com.example.shared") // required
+}
+
+// Since 0.24: src/commonMain/moko-resources/base/strings.xml (default locale)
+//             src/commonMain/moko-resources/es/strings.xml
+// (older versions used commonMain/resources/MR/)
+// Access from commonMain via StringDesc (no direct getString() in common code):
+//   MR.strings.welcome_message.desc()          -> StringDesc
+//   MR.strings.welcome_message.format(name)    -> formatted StringDesc
+//   MR.plurals.items_count.format(count, count) -> plural StringDesc
+// Resolve per platform: stringDesc.toString(context) on Android, .localized() on iOS.
 ```
 
 ---
@@ -328,29 +362,43 @@ commonMain {
 
 ### Pseudo-Localization
 
-Android: Enable in Developer Options > "Force pseudo-locales" to test with accented characters and RTL wrapping.
+Android: pseudo-locales are AAPT-generated (never hand-author `values-en-rXA`). Enable per build type, then pick `English (XA)` (accented, ~30% longer) or `Arabic (XB)` (RTL) in Settings > System > Languages:
+
+```kotlin
+// build.gradle.kts
+android {
+    buildTypes {
+        getByName("debug") { isPseudoLocalesEnabled = true }
+    }
+}
+```
 
 ```bash
-# Force locale on Android emulator
-adb shell settings put system user_locale "ar-SA"
-adb shell am restart
+# Switch emulator system locale (emulator/userdebug builds only)
+adb shell "setprop persist.sys.locale ar-SA; stop; sleep 2; start"
 ```
+
+iOS: Edit Scheme > Run > Options > App Language — "Double-Length Pseudolanguage" (expansion) or "Right-to-Left Pseudolanguage" (RTL).
 
 ### Layout Testing with Long Strings
 
-Create `values-en-rXA/strings.xml` (pseudo-locale) to test text expansion. German and Finnish text is typically 30-40% longer than English.
+German and Finnish text runs typically 30-40% longer than English — test with pseudo-locales or a forced locale.
 
 ```kotlin
-// Compose UI test with locale
+// Compose UI test with a forced locale. Override LocalContext with a
+// locale-scoped context — providing LocalConfiguration alone does NOT
+// re-resolve string resources.
 @Test
-fun testLongTextLayout() {
+fun longGermanStringsDoNotOverflow() {
     composeTestRule.setContent {
+        val base = LocalContext.current
+        val config = Configuration(base.resources.configuration)
+            .apply { setLocale(Locale.GERMAN) }
         CompositionLocalProvider(
-            LocalConfiguration provides Configuration().apply {
-                setLocale(Locale("de"))
-            }
+            LocalContext provides base.createConfigurationContext(config),
+            LocalConfiguration provides config
         ) {
-            WelcomeScreen(userName = "Maximilian Schwarzenegger")
+            WelcomeScreen(userName = "Maximilian Schwarzenegger", itemCount = 5)
         }
     }
     // Verify no text truncation or overflow

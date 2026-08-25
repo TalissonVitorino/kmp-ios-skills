@@ -10,7 +10,7 @@ description: Instructions to make or update an app's UI so that it adapts to dif
 license: Complete terms in LICENSE.txt
 metadata:
   author: Google LLC
-  last-updated: '2026-05-20'
+  last-updated: '2026-08-20'
   keywords:
   - android
   - ui
@@ -75,11 +75,11 @@ phone in portrait mode. On larger screen hand-held devices, like tablets and
 unfolded foldables, the navigation area must be accessible from the edge of the
 screen (navigation rail).
 
-If you need to provide more screen real state for the content, hide the
+If you need to provide more screen space for the content, hide the
 navigation area. Examples of this include:
 
 - Hiding the navigation bar when the user scrolls down and showing it again when the user scrolls up. The assumption is that when the user is scrolling down, they are consuming content but when scrolling up they are trying to navigate away from that content.
-- Hiding the navigation area when its content is distracting. For example, in camera previews or when the content is best displayed in full screen (such as a single photo screen).
+- Hiding the navigation area when its content is distracting. For example, in camera previews or when displaying a full-screen photo.
 
 When the detail screen is displayed full-screen on mobile, full-screen mode must
 be deactivated on larger screens.
@@ -101,7 +101,7 @@ parameter.
 
 Steps to migrate:
 
-- Identify the scenarios under which the navigation bar is hidden. This is usually done with a boolean variable for the visibility. It could be named something like `isNavBarVisible` or `shouldShowNavBar`.
+- Identify the scenarios under which the navigation bar is hidden. This is usually done with a boolean variable for the visibility. Use `isNavBarVisible` or `shouldShowNavBar` as the variable name.
 - Create an instance of `NavigationSuiteScaffoldState` using `rememberNavigationSuiteScaffoldState()` and pass it to `NavigationSuiteScaffold`.
 - When the navigation area visibility changes, use a `LaunchedEffect` to call `show` or `hide` on the `NavigationSuiteScaffoldState`.
 
@@ -207,8 +207,8 @@ Look for the following vertical list composables: `LazyColumn`,
 
 Steps to migrate:
 
-- Choose a suitable minimum width in dp for the column. It should be large enough so that item is clearly visible to the user.
-- For `LazyColumn`: change to a `LazyVerticalGrid` and follow the instruction below
+- Choose a suitable minimum width in dp for the column. The item must be clearly visible to the user at this width.
+- For `LazyColumn`: change to a `LazyVerticalGrid` and follow the instruction later
 - For `LazyVerticalGrid`: change the `columns` parameter to use `GridCells.Adaptive(<width>.dp)`
 - For `LazyVerticalStaggeredGrid`: change the `columns` parameter to use `StaggeredGridCells.Adaptive(<width>.dp)`
 
@@ -284,13 +284,13 @@ Check the FlexBox documentation:
 - [Set container behavior](references/android/develop/ui/compose/layouts/adaptive/flexbox/container-behavior.md)
 - [Set item behavior](references/android/develop/ui/compose/layouts/adaptive/flexbox/item-behavior.md)
 
-## MediaQuery
+### MediaQuery
 
 Check the [MediaQuery documentation](references/android/develop/ui/compose/layouts/adaptive/mediaquery/index.md) when you need to query the device's
 screen size, pointer precision, keyboard type, whether it has cameras or
 microphones, and other device capabilities.
 
-## Grid
+### Grid
 
 Check the Grid documentation when you need to display a fixed number of items in
 a grid layout:

@@ -29,16 +29,16 @@ jobs:
     timeout-minutes: 30
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Set up JDK 17
-        uses: actions/setup-java@v4
+        uses: actions/setup-java@v6
         with:
           java-version: '17'
           distribution: 'temurin'
 
       - name: Setup Gradle
-        uses: gradle/actions/setup-gradle@v3
+        uses: gradle/actions/setup-gradle@v6
         with:
           cache-read-only: ${{ github.ref != 'refs/heads/main' }}
 
@@ -49,18 +49,22 @@ jobs:
         run: ./gradlew testDebugUnitTest
 
       - name: Generate coverage report
+        # Project-defined Jacoco task - adjust to your setup
         run: ./gradlew jacocoTestDebugUnitTestReport
 
       - name: Upload coverage
-        uses: codecov/codecov-action@v4
+        uses: codecov/codecov-action@v7
         with:
-          files: app/build/reports/jacoco/**/*.xml
+          # `files` takes explicit comma-separated paths, not globs.
+          # Use `directory` to let the uploader search a tree.
+          directory: app/build/reports/jacoco
+          token: ${{ secrets.CODECOV_TOKEN }}
 
       - name: Build debug APK
         run: ./gradlew assembleDebug
 
       - name: Upload APK artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: debug-apk
           path: app/build/outputs/apk/debug/app-debug.apk
@@ -76,10 +80,10 @@ jobs:
     needs: build
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Set up JDK 17
-        uses: actions/setup-java@v4
+        uses: actions/setup-java@v6
         with:
           java-version: '17'
           distribution: 'temurin'
@@ -95,7 +99,7 @@ jobs:
           KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
 
       - name: Upload AAB artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: release-aab
           path: app/build/outputs/bundle/release/app-release.aab
@@ -123,19 +127,21 @@ concurrency:
 
 jobs:
   build:
-    runs-on: macos-14
+    runs-on: macos-26
     timeout-minutes: 45
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Select Xcode version
-        run: sudo xcode-select -s /Applications/Xcode_15.2.app
+        # Must match a version installed on the runner image (see actions/runner-images)
+        run: sudo xcode-select -s /Applications/Xcode_26.6.app
 
       - name: Cache SPM packages
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
-          path: ~/Library/Developer/Xcode/DerivedData/**/SourcePackages
+          # Must live under the -derivedDataPath used below
+          path: DerivedData/SourcePackages
           key: spm-${{ hashFiles('**/Package.resolved') }}
           restore-keys: spm-
 
@@ -143,7 +149,7 @@ jobs:
         run: |
           xcodebuild build-for-testing \
             -scheme MyApp \
-            -destination 'platform=iOS Simulator,name=iPhone 15,OS=17.2' \
+            -destination 'platform=iOS Simulator,name=iPhone 17' \
             -derivedDataPath DerivedData \
             CODE_SIGNING_ALLOWED=NO
 
@@ -151,13 +157,13 @@ jobs:
         run: |
           xcodebuild test-without-building \
             -scheme MyApp \
-            -destination 'platform=iOS Simulator,name=iPhone 15,OS=17.2' \
+            -destination 'platform=iOS Simulator,name=iPhone 17' \
             -derivedDataPath DerivedData \
             -resultBundlePath TestResults.xcresult
 
       - name: Upload test results
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: test-results
           path: TestResults.xcresult
@@ -167,12 +173,12 @@ jobs:
 
 ```yaml
   archive:
-    runs-on: macos-14
+    runs-on: macos-26
     if: github.ref == 'refs/heads/main'
     needs: build
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Install Apple certificate and provisioning profile
         env:
@@ -192,8 +198,15 @@ jobs:
           security unlock-keychain -p "" $KEYCHAIN_PATH
           security import $CERTIFICATE_PATH -P "$CERTIFICATE_PASSWORD" \
             -A -t cert -f pkcs12 -k $KEYCHAIN_PATH
-          security list-keychains -d user -s $KEYCHAIN_PATH
+          # Without this, codesign hangs on a keychain UI prompt
+          security set-key-partition-list -S apple-tool:,apple: -k "" $KEYCHAIN_PATH
+          security list-keychains -d user -s $KEYCHAIN_PATH login.keychain-db
+
+          # Xcode 16+ reads profiles from UserData; older tooling still uses
+          # the MobileDevice path. Install into both.
+          mkdir -p ~/Library/Developer/Xcode/UserData/Provisioning\ Profiles
           mkdir -p ~/Library/MobileDevice/Provisioning\ Profiles
+          cp $PP_PATH ~/Library/Developer/Xcode/UserData/Provisioning\ Profiles/
           cp $PP_PATH ~/Library/MobileDevice/Provisioning\ Profiles/
 
       - name: Archive
@@ -211,7 +224,7 @@ jobs:
             -exportOptionsPlist ExportOptions.plist
 
       - name: Upload IPA
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: release-ipa
           path: ${{ runner.temp }}/export/*.ipa
@@ -260,6 +273,7 @@ platform :android do
     upload_to_play_store(
       track: "internal",
       track_promote_to: "production",
+      track_promote_release_status: "inProgress",  # required for fractional rollout
       skip_upload_aab: true,
       rollout: "0.1"  # 10% staged rollout
     )
@@ -287,13 +301,19 @@ platform :ios do
   lane :test do
     run_tests(
       scheme: "MyApp",
-      device: "iPhone 15",
+      device: "iPhone 17",
       code_coverage: true
     )
   end
 
   desc "Build and deploy to TestFlight"
   lane :beta do
+    # match, pilot, and deliver pick the key up from lane_context
+    app_store_connect_api_key(
+      key_id: ENV["ASC_KEY_ID"],
+      issuer_id: ENV["ASC_ISSUER_ID"],
+      key_content: ENV["ASC_KEY_P8"]
+    )
     sync_signing
     increment_build_number(
       build_number: ENV["GITHUB_RUN_NUMBER"] || latest_testflight_build_number + 1
@@ -309,6 +329,11 @@ platform :ios do
 
   desc "Deploy to App Store"
   lane :release do
+    app_store_connect_api_key(
+      key_id: ENV["ASC_KEY_ID"],
+      issuer_id: ENV["ASC_ISSUER_ID"],
+      key_content: ENV["ASC_KEY_P8"]
+    )
     sync_signing
     increment_build_number
     build_app(scheme: "MyApp", export_method: "app-store")
@@ -355,14 +380,14 @@ end
 # .github/workflows/release.yml
 - name: Generate changelog
   id: changelog
-  uses: mikepenz/release-changelog-builder-action@v4
+  uses: mikepenz/release-changelog-builder-action@v6
   with:
     configuration: ".github/changelog-config.json"
   env:
     GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
 - name: Create GitHub Release
-  uses: softprops/action-gh-release@v1
+  uses: softprops/action-gh-release@v3
   with:
     tag_name: v${{ env.VERSION }}
     body: ${{ steps.changelog.outputs.changelog }}
@@ -382,7 +407,7 @@ jobs:
   release-android:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Extract version from tag
         run: echo "VERSION=${GITHUB_REF#refs/tags/v}" >> $GITHUB_ENV
       - name: Build and publish

@@ -7,7 +7,8 @@ description: Apple Liquid Glass design patterns for SwiftUI iOS 26 - glass effec
 
 Comprehensive guide to implementing Liquid Glass design patterns introduced at WWDC 2025 for iOS 26+.
 
-> **Minimum Deployment Target:** iOS 26.0+ / macOS 26.0+ / watchOS 26.0+ / tvOS 26.0+ / visionOS 26.0+
+> **Minimum Deployment Target:** iOS 26.0+ / iPadOS 26.0+ / macOS 26.0+ / watchOS 26.0+ / tvOS 26.0+ / Mac Catalyst 26.0+
+> **Note:** `glassEffect` and related APIs are NOT available on visionOS. visionOS keeps its own `.glassBackgroundEffect()` material.
 
 ---
 
@@ -50,12 +51,13 @@ The primary modifier for applying Liquid Glass to any SwiftUI view.
 ### Signature
 
 ```swift
-func glassEffect<S: Shape>(
+nonisolated func glassEffect(
     _ glass: Glass = .regular,
-    in shape: S = DefaultGlassEffectShape,
-    isEnabled: Bool = true
+    in shape: some Shape = DefaultGlassEffectShape()
 ) -> some View
 ```
+
+`DefaultGlassEffectShape` is a capsule. There is no `isEnabled:` parameter (it existed in early iOS 26 betas but was removed before release) -- conditionally disable glass by passing `.identity`.
 
 ### Glass Variants
 
@@ -64,6 +66,15 @@ func glassEffect<S: Shape>(
 | `.regular` | Medium | Toolbars, buttons, nav bars, tab bars -- the default for most controls |
 | `.clear` | High | Floating controls over media-rich backgrounds (photos, maps, video) |
 | `.identity` | None (pass-through) | Conditional disabling of the glass effect |
+
+`.clear` does not dim what is behind it. Apple requires you to add your own dimming treatment beneath it so the content on top stays legible:
+
+```swift
+Label("Flag", systemImage: "flag.fill")
+    .padding()
+    .glassEffect(.clear)
+    .background(.black.opacity(0.3))
+```
 
 ### Basic Usage
 
@@ -81,9 +92,9 @@ Button(action: { togglePlay() }) {
 }
 .glassEffect(.clear)
 
-// ✅ Conditional glass
+// ✅ Conditional glass -- pass .identity to disable
 Button("Action") { performAction() }
-    .glassEffect(.regular, isEnabled: showGlass)
+    .glassEffect(showGlass ? .regular : .identity)
 
 // ✅ Disabled glass (identity)
 Text("No Glass")
@@ -158,13 +169,15 @@ HStack(spacing: 12) {
 
 ---
 
-## 4. Interactive Glass (iOS Only)
+## 4. Interactive Glass
 
-Interactive glass adds touch-responsive physical behaviors to glass elements. This is an iOS-only feature and has no effect on macOS, watchOS, tvOS, or visionOS.
+Interactive glass adds touch- and pointer-responsive physical behaviors to glass elements. `interactive(_:)` is available on all `glassEffect` platforms (iOS, iPadOS, macOS, Mac Catalyst, tvOS, watchOS); the scale/bounce/illumination feedback is most prominent on touch platforms.
 
 ### API
 
 ```swift
+func interactive(_ isEnabled: Bool = true) -> Glass
+
 .glassEffect(.regular.interactive())
 ```
 
@@ -232,8 +245,8 @@ Glass can be rendered in any SwiftUI `Shape`. The shape determines the outline, 
 // Rounded rectangle with explicit radius
 .glassEffect(.regular, in: RoundedRectangle(cornerRadius: 16))
 
-// Concentric rounded rectangle (radius derived from parent)
-.glassEffect(.regular, in: .rect(cornerRadius: .containerConcentric))
+// Concentric rounded rectangle (corner radius derived from the container shape)
+.glassEffect(.regular, in: ConcentricRectangle(corners: .concentric(minimum: 8)))
 
 // Ellipse
 .glassEffect(.regular, in: .ellipse)
@@ -268,16 +281,17 @@ Button(action: {}) {
 
 2. **Capsules** -- Radius is always 50% of the shorter dimension. Capsules automatically produce concentric inner shapes when nesting glass.
 
-3. **Concentric Shapes** -- Radius equals `parent radius - padding`. Use `.rect(cornerRadius: .containerConcentric)` for inner elements that should match their container's curvature.
+3. **Concentric Shapes** -- Radius equals `container radius - inset`. Use `ConcentricRectangle` (iOS 26+) for inner elements that should match their container's curvature; it resolves against the nearest container shape, so declare one on the parent with `.containerShape(_:)`.
 
 ```swift
 // ✅ Concentric nesting example
 VStack {
     Button("Inner Action") {}
-        .glassEffect(.regular, in: .rect(cornerRadius: .containerConcentric))
+        .glassEffect(.regular, in: ConcentricRectangle(corners: .concentric(minimum: 8)))
 }
 .padding(8)
 .glassEffect(.regular, in: RoundedRectangle(cornerRadius: 24))
+.containerShape(.rect(cornerRadius: 24))
 ```
 
 ---
@@ -286,36 +300,39 @@ VStack {
 
 `GlassEffectContainer` is the grouping primitive for glass elements. It serves two critical functions:
 
-1. **Combines multiple glass shapes** into a unified visual composition with consistent spacing and shared rendering.
-2. **Prevents glass from sampling other glass.** Without a container, overlapping glass elements would refract each other, creating visual artifacts.
+1. **Renders every enclosed glass shape in one pass** -- the only way to get acceptable performance with multiple glass effects.
+2. **Lets the shapes blend and morph into each other.** Outside a container each effect is isolated: shapes never merge, and `glassEffectID` transitions never animate.
 
 ### Signature
 
 ```swift
-GlassEffectContainer(spacing: CGFloat? = nil) {
-    // Content with .glassEffect() modifiers
-}
+@MainActor @preconcurrency
+init(spacing: CGFloat? = nil, @ContentBuilder content: () -> Content)
 ```
+
+`spacing` is **not** layout spacing. It is the blend threshold: the larger the value, the sooner two glass shapes start merging as they approach each other. `GlassEffectContainer` performs no layout of its own -- put an `HStack`/`VStack`/`ForEach` inside it and set the *layout* spacing there. When the container spacing exceeds the stack spacing, the shapes blend at rest.
 
 ### Basic Usage
 
 ```swift
-// ✅ Toolbar with multiple glass buttons
-GlassEffectContainer(spacing: 12) {
-    Button(action: { undo() }) {
-        Image(systemName: "arrow.uturn.backward")
-    }
-    .glassEffect()
+// ✅ Toolbar with multiple glass buttons -- layout comes from the HStack
+GlassEffectContainer(spacing: 20) {
+    HStack(spacing: 12) {
+        Button(action: { undo() }) {
+            Image(systemName: "arrow.uturn.backward")
+        }
+        .glassEffect()
 
-    Button(action: { redo() }) {
-        Image(systemName: "arrow.uturn.forward")
-    }
-    .glassEffect()
+        Button(action: { redo() }) {
+            Image(systemName: "arrow.uturn.forward")
+        }
+        .glassEffect()
 
-    Button(action: { share() }) {
-        Image(systemName: "square.and.arrow.up")
+        Button(action: { share() }) {
+            Image(systemName: "square.and.arrow.up")
+        }
+        .glassEffect()
     }
-    .glassEffect()
 }
 ```
 
@@ -324,10 +341,12 @@ GlassEffectContainer(spacing: 12) {
 ```swift
 // ✅ CORRECT: Multiple glass elements grouped in a container
 GlassEffectContainer(spacing: 16) {
-    Button("Cancel") { cancel() }
-        .glassEffect()
-    Button("Save") { save() }
-        .glassEffect(.regular.tint(.blue))
+    HStack(spacing: 16) {
+        Button("Cancel") { cancel() }
+            .glassEffect()
+        Button("Save") { save() }
+            .glassEffect(.regular.tint(.blue))
+    }
 }
 
 // ❌ WRONG: Multiple glass elements without a container
@@ -355,36 +374,41 @@ GlassEffectContainer(spacing: 8) {
 }
 ```
 
-### Nested Containers
+### Sub-Groups with `glassEffectUnion`
+
+Do not reach for nested containers to build sub-groups -- effects in different containers cannot blend or morph into each other, and Apple warns that creating too many containers degrades performance. Use one container and `glassEffectUnion(id:namespace:)` to fuse a subset of shapes into a single continuous capsule:
 
 ```swift
-// ✅ Nested containers for complex layouts
+// ✅ One container, two fused sub-groups
 GlassEffectContainer(spacing: 16) {
     HStack(spacing: 12) {
-        GlassEffectContainer(spacing: 4) {
-            Button(action: {}) { Image(systemName: "bold") }
-                .glassEffect()
-            Button(action: {}) { Image(systemName: "italic") }
-                .glassEffect()
-        }
+        Button(action: { bold() }) { Image(systemName: "bold") }
+            .glassEffect()
+            .glassEffectUnion(id: "text", namespace: namespace)
+        Button(action: { italic() }) { Image(systemName: "italic") }
+            .glassEffect()
+            .glassEffectUnion(id: "text", namespace: namespace)
 
-        GlassEffectContainer(spacing: 4) {
-            Button(action: {}) { Image(systemName: "list.bullet") }
-                .glassEffect()
-            Button(action: {}) { Image(systemName: "list.number") }
-                .glassEffect()
-        }
+        Button(action: { bullets() }) { Image(systemName: "list.bullet") }
+            .glassEffect()
+            .glassEffectUnion(id: "lists", namespace: namespace)
+        Button(action: { numbers() }) { Image(systemName: "list.number") }
+            .glassEffect()
+            .glassEffectUnion(id: "lists", namespace: namespace)
     }
 }
 ```
 
+`glassEffectUnion` is also the way to group views that live outside a single layout container.
+
 ### Key Rules
 
 - Always wrap 2+ adjacent glass elements in a `GlassEffectContainer`
-- The container itself is invisible -- it only affects glass rendering
-- Spacing parameter controls the gap between glass shapes in the composition
+- The container itself is invisible and lays nothing out -- supply your own `HStack`/`VStack` inside
+- Container `spacing` is the blend threshold, not a layout gap; container spacing > stack spacing means shapes merge at rest
+- Apply `.glassEffect()` **after** any modifier that changes the view's appearance -- it captures the content it sends to the container
 - A single glass element does NOT require a container
-- Containers can be nested for grouped sub-layouts
+- Keep the container count low; prefer `glassEffectUnion` over nesting
 
 ---
 
@@ -397,12 +421,15 @@ Glass morphing creates fluid, animated transitions between glass shapes when vie
 1. Elements must be inside the **same `GlassEffectContainer`**
 2. Each view must have a **unique `glassEffectID`** with a **shared `Namespace`**
 3. State changes must be wrapped in an **animation** (e.g., `withAnimation(.bouncy)`)
-4. The animation drives the morphing transition
+4. Shapes morph into each other only when they sit **within the container's `spacing`**; for effects farther apart the default `.matchedGeometry` transition does not apply -- opt into `.glassEffectTransition(.materialize)` instead
 
 ### API
 
 ```swift
-func glassEffectID<ID: Hashable>(_ id: ID, in namespace: Namespace.ID) -> some View
+nonisolated func glassEffectID(
+    _ id: (some Hashable & Sendable)?,
+    in namespace: Namespace.ID
+) -> some View
 ```
 
 ### Basic Morphing Example
@@ -414,28 +441,30 @@ struct MorphingToolbar: View {
 
     var body: some View {
         GlassEffectContainer(spacing: 12) {
-            Button(action: {
-                withAnimation(.bouncy) {
-                    isExpanded.toggle()
+            HStack(spacing: 12) {
+                Button(action: {
+                    withAnimation(.bouncy) {
+                        isExpanded.toggle()
+                    }
+                }) {
+                    Image(systemName: isExpanded ? "chevron.left" : "chevron.right")
                 }
-            }) {
-                Image(systemName: isExpanded ? "chevron.left" : "chevron.right")
-            }
-            .glassEffect()
-            .glassEffectID("toggle", in: namespace)
+                .glassEffect()
+                .glassEffectID("toggle", in: namespace)
 
-            if isExpanded {
-                Button("Cut") { cut() }
-                    .glassEffect()
-                    .glassEffectID("cut", in: namespace)
+                if isExpanded {
+                    Button("Cut") { cut() }
+                        .glassEffect()
+                        .glassEffectID("cut", in: namespace)
 
-                Button("Copy") { copy() }
-                    .glassEffect()
-                    .glassEffectID("copy", in: namespace)
+                    Button("Copy") { copy() }
+                        .glassEffect()
+                        .glassEffectID("copy", in: namespace)
 
-                Button("Paste") { paste() }
-                    .glassEffect()
-                    .glassEffectID("paste", in: namespace)
+                    Button("Paste") { paste() }
+                        .glassEffect()
+                        .glassEffectID("paste", in: namespace)
+                }
             }
         }
     }
@@ -479,8 +508,8 @@ struct ExpandableFAB: View {
     @State private var isOpen = false
 
     var body: some View {
-        VStack(spacing: 12) {
-            GlassEffectContainer(spacing: 10) {
+        GlassEffectContainer(spacing: 16) {
+            VStack(spacing: 12) {
                 if isOpen {
                     Button(action: { takePhoto() }) {
                         Label("Camera", systemImage: "camera")
@@ -564,18 +593,15 @@ Use `.glassProminent` for primary actions, call-to-action buttons, and confirmat
 | `.glass` | Translucent | Secondary, cancel, navigation, toolbar |
 | `.glassProminent` | Opaque | Primary, submit, continue, call-to-action |
 
-### Combining with Custom Glass
+### Coloring Glass Buttons
+
+Do NOT stack `.buttonStyle(.glass)` and `.glassEffect()` on the same view -- that applies two glass layers. Pick one API: `buttonStyle` for standard buttons, `glassEffect` for custom controls. To color a glass button, use the standard `.tint()` view modifier:
 
 ```swift
-// ✅ Using buttonStyle with glassEffect for fine control
-Button("Share") { share() }
-    .buttonStyle(.glass)
-    .glassEffect(.regular.tint(.blue).interactive())
-
-// ✅ Prominent with tint
+// ✅ Prominent glass button colored via tint
 Button("Purchase") { purchase() }
     .buttonStyle(.glassProminent)
-    .glassEffect(.regular.tint(.green))
+    .tint(.green)
 ```
 
 ---
@@ -723,8 +749,7 @@ In iOS 26, these navigation elements receive glass treatment automatically:
 - `NavigationStack` title bars
 - `TabView` tab bars
 - `.toolbar` items
-- `.navigationBarItems`
-- Search bars in navigation context
+- Search bars in navigation context (`.searchable`)
 
 ### Custom Floating Glass Controls
 
@@ -753,35 +778,40 @@ ZStack(alignment: .bottomTrailing) {
 
 ## 11. Scroll Edge Effects
 
-Scroll edge effects control how the glass navigation bar transitions as the user scrolls content beneath it.
-
-### Soft Edge (Default on iOS/iPadOS)
+Scroll edge effects control how content dissolves beneath glass navigation elements as the user scrolls. The API is `scrollEdgeEffectStyle(_:for:)` (iOS 26+):
 
 ```swift
-// ✅ Soft scroll edge -- subtle, gradual transition
-NavigationStack {
-    ScrollView {
-        ContentView()
-    }
-    .toolbarBackgroundVisibility(.automatic, for: .navigationBar)
-}
+nonisolated func scrollEdgeEffectStyle(
+    _ style: ScrollEdgeEffectStyle?,
+    for edges: Edge.Set
+) -> some View
 ```
 
-Soft edges create a gentle, blurred transition between the glass navigation bar and scrolling content. This is the default and preferred style for iOS and iPadOS.
+`ScrollEdgeEffectStyle` has three options: `.automatic`, `.soft`, and `.hard`.
 
-### Hard Edge (Default on macOS)
+### Soft Edge
 
 ```swift
-// ✅ Hard scroll edge -- stronger boundary
-NavigationStack {
-    ScrollView {
-        ContentView()
-    }
-    .toolbarBackgroundVisibility(.visible, for: .navigationBar)
+// ✅ Soft scroll edge -- progressive blur/fade under the bar
+ScrollView {
+    ContentView()
 }
+.scrollEdgeEffectStyle(.soft, for: .top)
 ```
 
-Hard edges create a more defined, opaque boundary. This is the default on macOS where the visual language favors stronger delineation.
+Soft edges create a gentle, blurred transition between floating glass elements and scrolling content. This is what `.automatic` resolves to for most iOS surfaces.
+
+### Hard Edge
+
+```swift
+// ✅ Hard scroll edge -- sharper, more opaque boundary
+List {
+    ContentRows()
+}
+.scrollEdgeEffectStyle(.hard, for: .top)
+```
+
+Hard edges create a defined, more opaque boundary. Use them for dense or pinned content (tables, sidebars) where a crisp division aids legibility; macOS surfaces lean this way by default.
 
 ### Rules
 
@@ -803,7 +833,7 @@ Liquid Glass includes comprehensive automatic accessibility adaptations. These r
 | **Reduce Transparency** | Glass frosting increases to near-opaque, background blur intensifies |
 | **Increase Contrast** | Glass gains stark borders and higher-contrast fills |
 | **Reduce Motion** | Morphing animations, shimmer, bounce, and interactive effects are toned down or disabled |
-| **Tinted Mode** (iOS 26.1+) | Glass applies user-selected tint overlays |
+| **Liquid Glass: Tinted** (iOS 26.1+, Settings > Display & Brightness) | Not an accessibility switch, but a user preference that raises glass opacity and contrast system-wide -- design so both Clear and Tinted stay legible |
 
 ### Manual Accessibility Overrides
 
@@ -925,18 +955,20 @@ struct AdaptiveGlassButton: View {
 
 ## 14. Cross-Platform Glass (iOS, iPadOS, macOS, watchOS, tvOS, visionOS)
 
-Glass is available across all Apple platforms in iOS 26 and its equivalents, but the rendering and default behaviors differ by platform.
+`glassEffect` is available on iOS, iPadOS, macOS, Mac Catalyst, tvOS, and watchOS (all version 26+), but rendering and default behaviors differ by platform. It is NOT available on visionOS -- use `.glassBackgroundEffect()` there.
 
 ### Platform-Specific Defaults
 
-| Platform | Default Shape | Notes |
-|----------|--------------|-------|
-| **iOS** | Capsule | Full interactive support, touch-point illumination |
-| **iPadOS** | Capsule | Larger touch targets, pointer hover support |
-| **macOS** | Platform-specific | Different corner radii, hover effects, click behaviors |
-| **watchOS** | Rounded rectangle | Smaller glass areas, simplified effects |
-| **tvOS** | Rounded rectangle | Focus-based interaction, large glass surfaces |
-| **visionOS** | Spatial glass | 3D depth, spatial lighting, volumetric rendering |
+`DefaultGlassEffectShape` is a capsule on every platform that has `glassEffect` -- the shape does not vary by platform. What varies is interaction:
+
+| Platform | Notes |
+|----------|-------|
+| **iOS** | Full interactive support, touch-point illumination |
+| **iPadOS** | Larger touch targets, pointer hover support |
+| **macOS** | Pointer hover and click behaviors instead of touch |
+| **watchOS** | Smaller glass areas, simplified effects |
+| **tvOS** | Focus-based interaction; `.glass`/`.glassProminent` apply the effect whether or not the button has focus |
+| **visionOS** | No `glassEffect` -- use `.glassBackgroundEffect()`; 3D depth, real environment lighting |
 
 ### Cross-Platform Code
 
@@ -956,14 +988,10 @@ struct CrossPlatformToolbar: View {
             }
         }
         .padding()
-        #if os(iOS)
-        .glassEffect(.regular.interactive())
-        #elseif os(macOS)
-        .glassEffect(.regular)
-        #elseif os(visionOS)
-        .glassEffect(.regular)
+        #if os(visionOS)
+        .glassBackgroundEffect()
         #else
-        .glassEffect()
+        .glassEffect(.regular.interactive())
         #endif
     }
 }
@@ -972,7 +1000,7 @@ struct CrossPlatformToolbar: View {
 ### visionOS Spatial Glass
 
 ```swift
-// ✅ visionOS spatial glass considerations
+// ✅ visionOS uses glassBackgroundEffect, NOT glassEffect
 #if os(visionOS)
 struct SpatialGlassPanel: View {
     var body: some View {
@@ -980,10 +1008,9 @@ struct SpatialGlassPanel: View {
             Text("Controls")
                 .font(.headline)
             Button("Play") { play() }
-                .glassEffect()
         }
         .padding(24)
-        .glassEffect(.regular, in: RoundedRectangle(cornerRadius: 24))
+        .glassBackgroundEffect(in: RoundedRectangle(cornerRadius: 24))
         // Spatial glass uses real environment lighting
         // and has true depth in 3D space
     }
@@ -1015,9 +1042,11 @@ Glass blur compositing is computationally expensive. Follow these guidelines to 
 ```swift
 // ✅ Batch glass elements in a container (single compositing pass)
 GlassEffectContainer(spacing: 12) {
-    ForEach(actions) { action in
-        Button(action.title) { action.perform() }
-            .glassEffect()
+    HStack(spacing: 12) {
+        ForEach(actions) { action in
+            Button(action.title) { action.perform() }
+                .glassEffect()
+        }
     }
 }
 
@@ -1038,7 +1067,7 @@ ForEach(actions) { action in
 | **Use `.identity` off-screen** | Disable glass for views that are not visible |
 | **Avoid glass on animated content** | Do not apply glass to views with continuous animation |
 | **Profile with Instruments** | Use the Rendering instrument to identify GPU bottlenecks |
-| **Test on oldest target device** | Glass is most expensive on older GPUs (A12, A13) |
+| **Test on oldest target device** | Glass is most expensive on the oldest iOS 26-capable GPUs (A13, e.g. iPhone 11 / SE 2nd gen) |
 
 ### Lazy Glass for Lists
 
@@ -1068,11 +1097,10 @@ struct PerformantListView: View {
 
 ```swift
 // Profile glass performance with Instruments:
-// 1. Open Instruments > Rendering template
-// 2. Look for "Offscreen Render" passes (glass causes these)
-// 3. Check GPU utilization -- glass should not push above 60%
-// 4. Monitor frame drops in scroll views near glass elements
-// 5. Compare with glass disabled (.identity) to measure impact
+// 1. Use the Animation Hitches and Metal System Trace instruments
+// 2. Look for offscreen render passes (glass compositing causes these)
+// 3. Monitor frame drops in scroll views near glass elements
+// 4. Compare with glass disabled (.identity) to measure impact
 ```
 
 ---
@@ -1214,7 +1242,7 @@ struct AccessibleGlassNavBar: View {
             HStack(spacing: 4) {
                 ForEach(Array(tabs.enumerated()), id: \.offset) { index, tab in
                     Button(action: {
-                        let animation: Animation = reduceMotion ? .none : .bouncy
+                        let animation: Animation? = reduceMotion ? nil : .bouncy
                         withAnimation(animation) {
                             selectedTab = index
                         }
@@ -1254,7 +1282,7 @@ struct AccessibleGlassNavBar: View {
 | # | Mistake | Fix |
 |---|---------|-----|
 | 1 | Applying glass to content cards or list rows | Glass is for navigation layer only. Use `.background(.regularMaterial)` for content surfaces. |
-| 2 | Missing `GlassEffectContainer` around multiple glass elements | Wrap 2+ adjacent glass elements in `GlassEffectContainer(spacing:)` to prevent glass-on-glass artifacts. |
+| 2 | Missing `GlassEffectContainer` around multiple glass elements | Wrap 2+ adjacent glass elements in `GlassEffectContainer(spacing:)`; outside one they render separately and cannot blend or morph. |
 | 3 | Using `.regular` over media-rich backgrounds | Use `.clear` for high-transparency glass over photos, maps, and video. |
 | 4 | Poor text contrast on glass | Use `.foregroundStyle(.white)` and `.fontWeight(.bold)` or `.semibold` minimum. |
 | 5 | Missing accessibility support | Glass adapts automatically, but test with Reduce Transparency, Increase Contrast, and Reduce Motion. Add manual overrides when automatic adaptation is insufficient. |
@@ -1262,7 +1290,7 @@ struct AccessibleGlassNavBar: View {
 | 7 | Morphing without animation wrapper | State changes must be wrapped in `withAnimation(.bouncy)` or similar for morphing to animate. |
 | 8 | Glass on every cell in a scrolling list | Extremely expensive. Glass compositing on 50+ cells causes frame drops. Keep glass on fixed navigation elements only. |
 | 9 | Using `.interactive()` on non-tappable views | Interactive glass is for buttons and controls only. Applying it to labels or decorations is misleading. |
-| 10 | Forgetting to test on older devices | Glass compositing is GPU-intensive. Test on the oldest supported device (e.g., iPhone XR / A12) to ensure 60fps. |
+| 10 | Forgetting to test on older devices | Glass compositing is GPU-intensive. Test on the oldest iOS 26-capable device (iPhone 11 / SE 2nd gen, A13) to ensure 60fps. |
 | 11 | Using thin/light font weights on glass | Thin text is illegible through glass. Use `.semibold` or `.bold` minimum. |
 | 12 | Not providing `glassEffectID` for all morphing elements | Every element in a morphing group needs a unique, stable ID. Missing IDs cause abrupt appearance/disappearance instead of morphing. |
 | 13 | Mixing soft and hard scroll edges | Choose one scroll edge style per view. Mixing creates visual inconsistency. |
@@ -1359,7 +1387,7 @@ if #available(iOS 26, *) {
 .glassEffect(.regular.tint(.blue))
 .glassEffect(.clear.tint(.red.opacity(0.5)))
 
-// Interactive (iOS only)
+// Interactive
 .glassEffect(.regular.interactive())
 .glassEffect(.clear.interactive().tint(.green))
 
@@ -1367,18 +1395,21 @@ if #available(iOS 26, *) {
 .glassEffect(.regular, in: .capsule)
 .glassEffect(.regular, in: .circle)
 .glassEffect(.regular, in: RoundedRectangle(cornerRadius: 16))
-.glassEffect(.regular, in: .rect(cornerRadius: .containerConcentric))
+.glassEffect(.regular, in: ConcentricRectangle(corners: .concentric(minimum: 8)))
 .glassEffect(.regular, in: .ellipse)
 
-// Conditional
-.glassEffect(.regular, isEnabled: condition)
+// Conditional (no isEnabled: parameter exists -- use .identity)
 .glassEffect(condition ? .regular : .identity)
 
-// Container
-GlassEffectContainer(spacing: 12) { /* glass views */ }
+// Container (spacing = blend threshold; the stack does the layout)
+GlassEffectContainer(spacing: 20) { HStack(spacing: 12) { /* glass views */ } }
 
 // Morphing
 .glassEffectID("uniqueID", in: namespace)
+.glassEffectTransition(.materialize)   // .matchedGeometry (default) | .materialize | .identity
+
+// Fuse shapes into one capsule
+.glassEffectUnion(id: "group", namespace: namespace)
 
 // Button styles
 .buttonStyle(.glass)
@@ -1399,7 +1430,7 @@ Need glass?
   |     NO  -> Use .regular
   |
   +-- Is it a tappable control?
-  |     YES -> Consider .interactive() (iOS only)
+  |     YES -> Consider .interactive()
   |     NO  -> Do NOT use .interactive()
   |
   +-- Multiple glass elements adjacent?

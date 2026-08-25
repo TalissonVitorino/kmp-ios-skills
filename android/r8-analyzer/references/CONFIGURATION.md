@@ -38,7 +38,8 @@ type for release and performance testing. It MUST use the optimized default file
 - **AGP 8.0+** : Enabled by default. Ensure `android.enableR8.fullMode=false` is **NOT** present.
 - **Pre-AGP 8.0** : Explicitly enable with `android.enableR8.fullMode=true`.
 
-**Optimized Resource Shrinking:** If the AGP version of the project is less than
-9.0 and more than 8.6, explicitly enable the new resource shrinker:
+**Optimized Resource Shrinking:** If the AGP version of the project is 8.12 or
+8.13, explicitly enable the new resource shrinker (introduced in AGP 8.12;
+applied automatically from AGP 9.0 when resource shrinking is enabled):
 
     android.r8.optimizedResourceShrinking=true

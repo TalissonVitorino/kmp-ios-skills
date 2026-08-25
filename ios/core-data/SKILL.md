@@ -32,7 +32,11 @@ class PersistenceController {
         }
 
         container.viewContext.automaticallyMergesChangesFromParent = true
-        container.viewContext.mergePolicy = NSMergeByPropertyObjectTrumpMergePolicy
+        // Use the NSMergePolicy class properties, not the legacy globals:
+        // NSMergeByPropertyObjectTrumpMergePolicy & friends import as mutable
+        // globals (`var ...: AnyObject`), which is an error under the Swift 6
+        // language mode ("not concurrency-safe … shared mutable state").
+        container.viewContext.mergePolicy = NSMergePolicy.mergeByPropertyObjectTrump
     }
 
     var viewContext: NSManagedObjectContext {
@@ -151,17 +155,25 @@ func saveUser(name: String, email: String) {
     }
 }
 
-// ✅ Batch delete
+// ✅ Batch delete — runs at the SQL level (SQLite stores only); contexts do NOT
+// see the deletions automatically, and there is nothing to save() afterwards.
+// Return the deleted objectIDs and merge them into live contexts.
 func deleteAllUsers() {
     let context = PersistenceController.shared.backgroundContext()
 
     context.perform {
         let fetchRequest: NSFetchRequest<NSFetchRequestResult> = User.fetchRequest()
         let batchDelete = NSBatchDeleteRequest(fetchRequest: fetchRequest)
+        batchDelete.resultType = .resultTypeObjectIDs
 
         do {
-            try context.execute(batchDelete)
-            try context.save()
+            let result = try context.execute(batchDelete) as? NSBatchDeleteResult
+            if let objectIDs = result?.result as? [NSManagedObjectID] {
+                NSManagedObjectContext.mergeChanges(
+                    fromRemoteContextSave: [NSDeletedObjectsKey: objectIDs],
+                    into: [PersistenceController.shared.viewContext]
+                )
+            }
         } catch {
             print("Batch delete failed: \(error)")
         }
@@ -270,11 +282,19 @@ struct UserListView: View {
 ### SwiftData Predicates
 
 ```swift
-// ✅ #Predicate macro
-@Query(filter: #Predicate<User> { user in
-    user.name.contains("John") && user.createdAt > Date().addingTimeInterval(-86400)
-})
-var recentJohns: [User]
+// ✅ #Predicate macro — only literals and captured values are allowed inside the
+// closure; expressions like Date() or Calendar calls do NOT compile in a predicate
+// body. Compute them outside and capture the result.
+// @Query is a property wrapper, so it must be declared inside a View —
+// Swift rejects property wrappers on global/file-scope variables.
+struct JohnsView: View {
+    @Query(filter: #Predicate<User> { $0.name.contains("John") })
+    private var johns: [User]
+
+    var body: some View {
+        List(johns) { Text($0.name) }
+    }
+}
 
 // ✅ Dynamic predicate
 struct UserListView: View {
@@ -290,7 +310,10 @@ struct UserList: View {
 
     // A dynamic @Query must be initialized in init — it cannot be declared inside body.
     init(searchText: String) {
-        _users = Query(filter: #Predicate<User> { $0.name.contains(searchText) })
+        let dayAgo = Date.now.addingTimeInterval(-86400)  // computed outside, captured
+        _users = Query(filter: #Predicate<User> {
+            $0.name.contains(searchText) && $0.createdAt > dayAgo
+        })
     }
 
     var body: some View {
@@ -311,6 +334,8 @@ description.shouldInferMappingModelAutomatically = true
 description.shouldMigrateStoreAutomatically = true
 ```
 
+Both flags default to `true`, so `NSPersistentContainer` performs lightweight migration automatically — set them explicitly only to document intent or re-enable after a custom setup turned them off.
+
 ### Migration Strategy
 
 ```swift
@@ -324,15 +349,14 @@ func migrateStore(at sourceURL: URL, to destinationURL: URL,
         destinationModel: destinationModel
     )
 
-    // migrateStore requires BOTH options params (from-store and to-store).
+    // iOS 15+ typed overload; the older string-typed
+    // migrateStore(from:sourceType:options:with:toDestinationURL:...) is deprecated.
     try migrationManager.migrateStore(
         from: sourceURL,
-        sourceType: NSSQLiteStoreType,
-        options: nil,
-        with: mappingModel,
-        toDestinationURL: destinationURL,
-        destinationType: NSSQLiteStoreType,
-        destinationOptions: nil
+        type: .sqlite,
+        mapping: mappingModel,
+        to: destinationURL,
+        type: .sqlite
     )
 }
 ```
@@ -342,8 +366,11 @@ func migrateStore(at sourceURL: URL, to destinationURL: URL,
 ## Best Practices
 
 ```swift
-// ✅ Use background context for writes
-func batchInsert(items: [Item]) {
+// ✅ Use background context for writes (for very large imports prefer NSBatchInsertRequest)
+// Pass value types into the perform block — not managed objects from another context.
+struct ItemDTO { let name: String }
+
+func batchInsert(items: [ItemDTO]) {
     let context = backgroundContext()
 
     context.perform {
@@ -356,25 +383,28 @@ func batchInsert(items: [Item]) {
     }
 }
 
-// ✅ Batch fetch for large datasets
+// ✅ Batch fetch for large datasets — fetchBatchSize loads rows lazily in chunks.
+// Don't combine with returnsObjectsAsFaults = false: that forces every object
+// fully into memory and defeats the batching.
 func fetchAllUsersEfficiently() -> [User] {
     let request = NSFetchRequest<User>(entityName: "User")
-    request.returnsObjectsAsFaults = false
     request.fetchBatchSize = 100
 
-    return try! viewContext.fetch(request)
+    return (try? viewContext.fetch(request)) ?? []
 }
 
-// ❌ Don't block main thread
-// ❌ Bad: Fetching on main thread with large data
-let users = viewContext.fetch(largeRequest)  // Blocks UI
+// ❌ Bad: fetching large data on the main thread blocks the UI
+let users = try viewContext.fetch(largeRequest)
 
-// ✅ Good: Background fetch
+// ✅ Good: fetch in background, hand objectIDs to the main thread.
+// NSManagedObject is NOT thread-safe — never pass instances between contexts;
+// pass NSManagedObjectID (or plain value types) instead.
 let context = backgroundContext()
 context.perform {
-    let users = try! context.fetch(largeRequest)
+    let ids = ((try? context.fetch(largeRequest)) ?? []).map(\.objectID)
     DispatchQueue.main.async {
-        // Update UI with results
+        let users = ids.compactMap { viewContext.object(with: $0) as? User }
+        // Update UI with users
     }
 }
 ```

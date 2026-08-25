@@ -33,17 +33,19 @@ func loadUsersSucceeds() async throws {
 
 @Test func fetchReturnsUsers() async throws {
     let sut = makeSUT()
-    // #require unwraps/stops the test when the precondition fails.
-    let users = try #require(try await sut.fetchUsers())
-    #expect(!users.isEmpty)
+    let users = try await sut.fetchUsers()
+    // #require unwraps an optional (or checks a condition) and STOPS the test on failure.
+    let first = try #require(users.first)
+    #expect(!first.name.isEmpty)
 }
 ```
 
 ### Suites and setup
 
 ```swift
-// @Suite groups tests; init/deinit replace setUp/tearDown and give each
-// test a fresh instance (parallel by default, no shared mutable state).
+// @Suite groups tests; init replaces setUp and each test gets a fresh
+// instance (parallel by default, no shared mutable state). For tearDown,
+// use deinit — that requires a class or actor suite, not a struct.
 @Suite("UserViewModel")
 struct UserViewModelTests {
     let sut: UserViewModel
@@ -80,6 +82,14 @@ func validEmails(_ email: String) {
 @Test func throwsOnBadInput() async throws {
     await #expect(throws: NetworkError.noConnection) {
         try await sut.failingCall()
+    }
+}
+
+// confirmation replaces XCTestExpectation for callback-based APIs:
+@Test func delegateIsNotified() async {
+    await confirmation("delegate called") { confirmed in
+        sut.onUpdate = { confirmed() }
+        await sut.refresh()
     }
 }
 ```
@@ -168,56 +178,21 @@ func testRefreshButton_callsService() async {
 }
 ```
 
-## Async Testing
+## Async Testing (XCTest)
 
 ```swift
-func testAsyncOperation_completesSuccessfully() async throws {
-    // Given
-    let expectation = expectation(description: "Async completes")
-
-    // When
-    Task {
-        await sut.asyncOperation()
-        expectation.fulfill()
-    }
-
-    // Then
-    await fulfillment(of: [expectation], timeout: 1.0)
-}
-
-// ✅ Swift async/await
+// ✅ async functions: just await them directly — no expectation needed.
 func testAsyncFetch_returnsUsers() async throws {
     let users = try await sut.fetchUsers()
     XCTAssertFalse(users.isEmpty)
 }
-```
 
-## Property Testing
-
-```swift
-func testUserValidation_validEmails() {
-    let validEmails = [
-        "test@example.com",
-        "user.name@example.co.uk",
-        "user+tag@example.com"
-    ]
-
-    for email in validEmails {
-        XCTAssertTrue(Validator.isValidEmail(email), "Failed for: \(email)")
-    }
-}
-
-func testUserValidation_invalidEmails() {
-    let invalidEmails = [
-        "invalid",
-        "@example.com",
-        "user@",
-        "user @example.com"
-    ]
-
-    for email in invalidEmails {
-        XCTAssertFalse(Validator.isValidEmail(email), "Passed for: \(email)")
-    }
+// Expectations are for CALLBACK-based APIs only. In an async test use the
+// async-safe fulfillment(of:), never waitForExpectations/wait(for:).
+func testCallbackAPI_completes() async {
+    let exp = expectation(description: "callback fired")
+    sut.legacyFetch { _ in exp.fulfill() }
+    await fulfillment(of: [exp], timeout: 1.0)
 }
 ```
 
@@ -270,8 +245,8 @@ class LoginUITests: XCTestCase {
         // When
         app.buttons["loginButton"].tap()
 
-        // Then
-        XCTAssertTrue(app.staticTexts["welcomeMessage"].exists)
+        // Then — after navigation, wait; a bare .exists check races the transition.
+        XCTAssertTrue(app.staticTexts["welcomeMessage"].waitForExistence(timeout: 5))
     }
 }
 ```
@@ -279,22 +254,19 @@ class LoginUITests: XCTestCase {
 ### Snapshot Testing
 
 ```swift
-// ✅ Using View snapshot testing
+// pointfreeco/swift-snapshot-testing (1.19+); works in XCTest and Swift Testing.
+import SnapshotTesting
 import SwiftUI
-import XCTest
 
-struct UserCard_Previews: PreviewProvider {
-    static var previews: some View {
-        UserCard(user: .mock)
-    }
-}
-
-// Snapshot test
+// assertSnapshot(of:as:) — the old matching: label is deprecated.
 func testUserCard_snapshot() {
     let view = UserCard(user: .mock)
-    assertSnapshot(matching: view, as: .image(layout: .sizeThatFits))
+    assertSnapshot(of: view, as: .image(layout: .sizeThatFits))
+    // Or pin to a device: .image(layout: .device(config: .iPhone13))
 }
 ```
+
+Record and compare on the same simulator model/OS — rendering differs across devices.
 
 ## Testing SwiftUI Views
 
@@ -302,7 +274,11 @@ func testUserCard_snapshot() {
 import XCTest
 import ViewInspector  // https://github.com/nalexn/ViewInspector
 
-class UserRowTests: XCTestCase {
+// With a Swift 6 compiler ViewInspector's `inspect()` is @MainActor-isolated, so the
+// test methods must be too. Annotate the methods, not the class: a @MainActor subclass
+// of the nonisolated XCTestCase is itself an isolation error in Swift 6 language mode.
+final class UserRowTests: XCTestCase {
+    @MainActor
     func testUserRow_displaysUserName() throws {
         let user = User(id: "1", name: "John Doe", email: "john@example.com")
         let view = UserRow(user: user)
@@ -311,6 +287,7 @@ class UserRowTests: XCTestCase {
         XCTAssertEqual(text, "John Doe")
     }
 
+    @MainActor
     func testUserRow_tapping_callsAction() throws {
         let user = User(id: "1", name: "John", email: "john@example.com")
         var tapped = false
@@ -332,17 +309,15 @@ extension User {
     static let mock2 = User(id: "2", name: "Jane", email: "jane@example.com")
 }
 
-// ✅ Wait helpers
-func waitForElementToExist(
-    _ element: XCUIElement,
-    timeout: TimeInterval = 5.0
-) -> Bool {
-    let existsPredicate = NSPredicate(format: "exists == true")
-    let expectation = expectation(for: existsPredicate, evaluatedWith: element)
+// ✅ Waiting in UI tests: use the built-in API, not predicate expectations.
+XCTAssertTrue(app.buttons["loginButton"].waitForExistence(timeout: 5))
 
-    let result = XCTWaiter.wait(for: [expectation], timeout: timeout)
-    return result == .completed
-}
+// For conditions other than existence, use XCTNSPredicateExpectation + XCTWaiter:
+let hittable = XCTNSPredicateExpectation(
+    predicate: NSPredicate(format: "isHittable == true"),
+    object: app.buttons["loginButton"]
+)
+XCTAssertEqual(XCTWaiter.wait(for: [hittable], timeout: 5), .completed)
 ```
 
 ## Performance Tests

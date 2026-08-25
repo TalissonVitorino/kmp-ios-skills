@@ -40,11 +40,14 @@ let email = user.email!  // Don't do this
 ### Optional Mapping
 
 ```swift
-// ✅ map for transformation
-let uppercase = user.name?.map { $0.uppercased() }
+// ✅ Optional.map — transform the wrapped value (no `?` before .map)
+let uppercase = user.name.map { $0.uppercased() }  // String?
 
-// ✅ flatMap for chaining optionals
-let domain = user.email?.flatMap { $0.split(separator: "@").last }
+// ✅ Optional.flatMap — when the transform itself returns an optional
+let domain = user.email.flatMap { $0.split(separator: "@").last }  // Substring?
+
+// ❌ Bad: `user.name?.map { ... }` optional-chains into String's
+// Sequence.map — it maps over Characters and yields [String]?, not String?
 ```
 
 ## Closures
@@ -57,10 +60,10 @@ viewModel.fetchUsers { users in
     self.users = users
 }
 
-// Equivalent to
-viewModel.fetchUsers { users in
+// Equivalent to the non-trailing form
+viewModel.fetchUsers(completion: { users in
     self.users = users
-}
+})
 
 // ✅ Shorthand argument names
 viewModel.fetchUsers {
@@ -72,22 +75,26 @@ viewModel.fetchUsers {
 
 ```swift
 // ✅ Capture lists to avoid retain cycles
-class UserViewController: UIViewController {
-    private let viewModel: UserViewModel
+final class UserListViewController: UITableViewController {
+    private let viewModel = UserViewModel()
+    private var timer: Timer?
 
     func setupRefresh() {
         viewModel.onRefresh = { [weak self] in
-            guard let self = self else { return }
+            guard let self else { return }  // shorthand since Swift 5.7
             self.tableView.reloadData()
         }
     }
 
-    // ✅ Or capture self explicitly when ownership is clear
+    // ⚠️ A repeating Timer retains its closure until invalidate() —
+    // a strong `[self]` capture there is a retain cycle. Use weak self:
     func setupTimer() {
-        timer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [self] _ in
-            self.updateUI()
+        timer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] _ in
+            self?.updateUI()
         }
     }
+
+    private func updateUI() { tableView.reloadData() }
 }
 ```
 
@@ -105,8 +112,10 @@ let evens = numbers.filter { $0 % 2 == 0 }  // [2, 4]
 // ✅ reduce - combine
 let sum = numbers.reduce(0) { $0 + $1 }  // 15
 
-// ✅ compactMap - filter out nils
-let names = users.compactMap { $0.name }
+// ✅ compactMap - transform and drop nils in one pass
+let emails = users.compactMap(\.email)  // [String] from `email: String?`
+// (the stdlib has no non-optional overload: a non-optional transform silently
+// promotes to `T?`, so compactMap degenerates into map with no diagnostic. Use map.)
 
 // ✅ forEach - side effects
 numbers.forEach { print($0) }
@@ -144,6 +153,9 @@ struct User {
 
 ### Property Observers
 
+`willSet`/`didSet` do **not** fire when the property is assigned inside the type's
+own `init`, and assigning inside `didSet` does not re-enter the observer.
+
 ```swift
 class Settings {
     var theme: Theme = .light {
@@ -169,10 +181,16 @@ class Settings {
 ### Lazy Properties
 
 ```swift
-struct DataProcessor {
-    // ✅ Lazy - created only when accessed
+// Note: use a class — accessing a lazy var mutates the instance, so in a
+// struct every caller would need `mutating` (and a `let` struct can't call it).
+final class DataProcessor {
+    // ✅ Lazy - created only when accessed (not thread-safe: first access races)
     private lazy var formatter: DateFormatter = {
         let formatter = DateFormatter()
+        // A fixed dateFormat MUST pin the locale, or 12/24-hour and non-Gregorian
+        // user settings corrupt the output.
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.timeZone = TimeZone(secondsFromGMT: 0)
         formatter.dateFormat = "yyyy-MM-dd"
         return formatter
     }()
@@ -182,6 +200,9 @@ struct DataProcessor {
     }
 }
 ```
+
+For user-facing dates prefer `date.formatted(...)` / `Date.FormatStyle` over
+`DateFormatter` — see the `swift-formatstyle` skill.
 
 ## Protocols
 
@@ -195,12 +216,17 @@ protocol Repository {
     func save(_ item: Item) async throws
 }
 
-// ✅ Generic where clause
-extension Repository {
+// ✅ Protocol extension providing a default implementation
+// `withThrowingTaskGroup(of:)` requires a Sendable child result, so omitting
+// `Item: Sendable` is a hard error; `Self: Sendable` clears the SendableMetatypes
+// warning for capturing `Self.Type` in the child task. Constrain the extension
+// rather than the protocol.
+extension Repository where Self: Sendable, Item: Sendable {
+    // Results arrive in completion order, not input order.
     func fetchAll(ids: [String]) async throws -> [Item] {
         try await withThrowingTaskGroup(of: Item.self) { group in
             for id in ids {
-                group.addTask { try await fetch(id: id) }
+                group.addTask { try await self.fetch(id: id) }
             }
             return try await group.reduce(into: [Item]()) { $0.append($1) }
         }
@@ -259,24 +285,34 @@ func process<T: Sequence & Sendable>(_ items: T) where T.Element: Hashable {
 ### Associated Types
 
 ```swift
-protocol DataSource {
+// ✅ Declare a primary associated type (Swift 5.7+) so callers can constrain it
+protocol DataSource<Item> {
     associatedtype Item
     func getItems() async throws -> [Item]
 }
 
-class RemoteDataSource: DataSource {
-    typealias Item = User
-
+final class RemoteDataSource: DataSource {
+    // Item is inferred as User from getItems(); no explicit typealias needed
     func getItems() async throws -> [User] {
         try await api.getUsers()
     }
 }
+
+// Lets you write constrained opaque and existential types instead of generics
+func show(_ source: some DataSource<User>) { }
+let erased: any DataSource<User> = RemoteDataSource()
 ```
 
 ## Result Type
 
+Prefer `async throws` for async APIs — `Result` is for bridging completion handlers,
+storing an outcome as state, or deferring error handling. Since Swift 6, a thrown
+error can also be typed (`func load() throws(NetworkError) -> User`, SE-0413), which
+covers most of what `Result`'s `Failure` generic was used for. See the
+`error-handling-result` skill for the full decision table.
+
 ```swift
-// ✅ Result for error handling
+// Bridging / storing an outcome — not the default shape for a new async API
 func fetchUser(id: String) async -> Result<User, Error> {
     do {
         let user = try await api.getUser(id)
@@ -295,11 +331,15 @@ case .failure(let error):
     showError(error)
 }
 
-// ✅ map, flatMap on Result
-let name = await fetchUser(id: "123").map(\.name)
+// ✅ map, flatMap on Result (key path literals convert to functions, SE-0249)
+let nameResult = await fetchUser(id: "123").map(\.name)  // Result<String, Error>
 ```
 
 ## Async/Await
+
+Language-level basics only — for actors, isolation, `Sendable`, and Swift 6 data-race
+diagnostics use the `swift-concurrency` skill (`swift-concurrency-6-2` for the 6.2
+model: `nonisolated(nonsending)`, `@concurrent`, `-default-isolation MainActor`).
 
 ### Structured Concurrency
 
@@ -317,20 +357,22 @@ func loadDashboard() async throws -> Dashboard {
     )
 }
 
-// ✅ TaskGroup for dynamic concurrency
-func fetchAllImages(urls: [URL]) async throws -> [Image] {
-    try await withThrowingTaskGroup(of: Image.self) { group in
+// ✅ TaskGroup for dynamic concurrency.
+// The child result type must be Sendable, and results arrive in completion
+// order — collect (index, value) pairs if you need the input order back.
+func downloadAll(urls: [URL]) async throws -> [Data] {
+    try await withThrowingTaskGroup(of: Data.self) { group in
         for url in urls {
             group.addTask {
-                try await downloadImage(from: url)
+                try await URLSession.shared.data(from: url).0
             }
         }
 
-        var images: [Image] = []
-        for try await image in group {
-            images.append(image)
+        var results: [Data] = []
+        for try await data in group {
+            results.append(data)
         }
-        return images
+        return results
     }
 }
 ```
@@ -345,26 +387,26 @@ final class HomeViewModel {
     var users: [User] = []
 
     func loadUsers() async {
-        // Already on main actor
-        let users = try? await api.getUsers()
-        self.users = users ?? []
+        // Already on the main actor; the `await` suspends without leaving it
+        self.users = (try? await api.getUsers()) ?? []
     }
 }
 
-// ✅ Explicit main actor dispatch
-class NetworkService {
-    func fetch() async -> Data {
-        // Background work
-        let data = ...
-
-        // Dispatch to main if needed
+// ✅ Hop to the main actor only from non-isolated code
+final class NetworkService: Sendable {
+    func fetch(from url: URL) async throws -> Data {
+        let (data, _) = try await URLSession.shared.data(from: url)
         await MainActor.run {
-            // UI work
+            // UI work, isolated to the main actor
         }
-
         return data
     }
 }
+
+// ⚠️ A nonisolated `async` function does not guarantee a background thread.
+// Under Swift 6.2's `NonisolatedNonsendingByDefault` it runs on the caller's
+// actor, so calling it from `@MainActor` code keeps the work on main. Mark it
+// `@concurrent` to force it off the caller's actor.
 ```
 
 ## Enums
@@ -415,20 +457,29 @@ enum LoadState<T> {
     }
 }
 
-// Usage
-// Note: for new code prefer an @Observable model with a plain `var state` over
-// @Published/ObservableObject (iOS 17+). See the swiftui-observation skill.
-@Published var state: LoadState<[User]> = .idle
+// Usage — a plain `var` on an @Observable model (iOS 17+); @Published only exists
+// inside an ObservableObject and is legacy for new code. See swiftui-observation.
+@MainActor
+@Observable
+final class UsersModel {
+    var state: LoadState<[User]> = .idle
+}
 
-switch state {
-case .idle:
-    EmptyView()
-case .loading:
-    ProgressView()
-case .loaded(let users):
-    UserList(users: users)
-case .error(let error):
-    ErrorView(error: error)
+struct UsersScreen: View {
+    @State private var model = UsersModel()
+
+    var body: some View {
+        switch model.state {
+        case .idle:
+            EmptyView()
+        case .loading:
+            ProgressView()
+        case .loaded(let users):
+            UserList(users: users)
+        case .error(let error):
+            ErrorView(error: error)
+        }
+    }
 }
 ```
 
@@ -439,11 +490,13 @@ case .error(let error):
 public struct PublicAPI {
     public var value: String
 
-    private init() {
-        value = "default"
+    // ✅ public init must be explicit — the memberwise init is internal,
+    // so without this the type can't be constructed from other modules
+    public init(value: String = "default") {
+        self.value = value
     }
 
-    // ✅ private for fileprivate only when needed
+    // ✅ private (this declaration, plus same-type extensions in this file)
     private var helper: String {
         "helper"
     }
@@ -453,7 +506,15 @@ public struct PublicAPI {
 
     // ✅ fileprivate (same file)
     fileprivate var fileOnly: String = "fileOnly"
+
+    // ✅ package (Swift 5.9+) — visible to every module in the same SwiftPM
+    // package, but not to its clients. The right level for cross-module
+    // internals in a modularized app; needs `-package-name` when built by hand.
+    package var sharedAcrossModules: String = "package"
 }
+
+// `public` classes cannot be subclassed outside their module — use `open` for that.
+open class Plugin {}
 ```
 
 ## Key Paths
@@ -466,15 +527,20 @@ struct User {
     let age: Int
 }
 
-let nameKeyPath = \User.name
-let users = [User(...)]
+let users = [User(name: "Ada", email: "ada@example.com", age: 36)]
 
+// ✅ Key path literal used as a function (SE-0249)
 let names = users.map(\.name)  // [String]
 
-// ✅ With functions
-func sort<T>(_ users: [T], by keyPath: KeyPath<T, String>) -> [T] {
-    users.sorted { $0[keyPath: keyPath] < $1[keyPath: keyPath] }
+// ✅ Key path stored as a value
+let nameKeyPath: KeyPath<User, String> = \.name
+let firstName = users[0][keyPath: nameKeyPath]
+
+// ✅ Generic over the value type, not hardcoded to String
+func sorted<T, V: Comparable>(_ items: [T], by keyPath: KeyPath<T, V>) -> [T] {
+    items.sorted { $0[keyPath: keyPath] < $1[keyPath: keyPath] }
 }
 
-let sorted = sort(users, by: \.name)
+let byName = sorted(users, by: \.name)
+let byAge = sorted(users, by: \.age)
 ```

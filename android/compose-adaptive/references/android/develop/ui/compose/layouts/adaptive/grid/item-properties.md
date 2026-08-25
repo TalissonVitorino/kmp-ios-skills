@@ -6,6 +6,8 @@ and alignment of items within that structure.
 
 Place an item into a specific track or cell
 with the `row` and `column` parameters.
+Coordinate indexes work best for straightforward grid layouts.
+For larger or more complex layouts, define [named areas](https://developer.android.com/develop/ui/compose/layouts/adaptive/grid/container-properties#named-area) instead.
 
 The `row` and `column` parameters specify the row and column track indexes
 that the item is placed in.
@@ -137,7 +139,7 @@ A UI element in `Grid`
 that has no position specification undergoes auto-placement.
 This example shows how you can mix auto-placed elements
 and the UI elements with specified grid cells.
-Card **#2** and card **#4** are specified grid cells,
+Card **#2** and Card **#4** are placed in specified grid cells,
 and the other items are auto-placed.
 
 
@@ -165,4 +167,4 @@ Grid(
 
 <br />
 
-![Card #3 is placed next to card <b>#1</b>, as it is an auto-placement.](https://developer.android.com/static/develop/ui/compose/images/layouts/adaptive/grid/autoplacement-mixed-with-placement.png) **Figure 4** . Card **#3** is placed next to card **#1**, as it is an auto-placement.
+![Card #3 is placed next to Card <b>#1</b>, as it is an auto-placement.](https://developer.android.com/static/develop/ui/compose/images/layouts/adaptive/grid/autoplacement-mixed-with-placement.png) **Figure 4** . Card **#3** is placed next to Card **#1**, as it is an auto-placement.

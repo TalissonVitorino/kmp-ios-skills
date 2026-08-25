@@ -3,6 +3,8 @@ name: perfetto-trace-analysis
 description: Analyzes Perfetto traces to find the root cause of latency, memory, or
   jank issues in Android apps. Use when the user provides a Perfetto trace file and
   asks any question, ongoing investigation, or open-ended request to analyze its contents.
+  Standalone quick path; for end-to-end profiling (recording a new trace + heap dumps
+  + guided analysis) prefer android-profiler.
 license: Complete terms in LICENSE.txt
 metadata:
   author: Google LLC

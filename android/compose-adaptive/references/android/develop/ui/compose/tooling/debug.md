@@ -68,7 +68,7 @@ Inspector](https://developer.android.com/static/develop/ui/compose/images/li-sho
 
 ### Compose semantics
 
-In Compose, [Semantics](https://developer.android.com/develop/ui/compose/semantics) describe your UI in an
+In Compose, [Semantics](https://developer.android.com/develop/ui/compose/accessibility/semantics) describe your UI in an
 alternative manner that is understandable for
 [Accessibility](https://developer.android.com/develop/ui/compose/accessibility) services and for the
 [Testing](https://developer.android.com/develop/ui/compose/testing) framework. You can use the Layout Inspector

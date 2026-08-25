@@ -18,7 +18,7 @@ plugins {
     kotlin("plugin.serialization")
 }
 
-val ktor = "3.5.0"   // current 3.x — verify latest at ktor.io/docs/releases
+val ktor = "3.5.2"   // current 3.x — verify latest at ktor.io/docs/releases
 
 kotlin {
     sourceSets {
@@ -71,6 +71,7 @@ object HttpClientFactory {
             if (isDebug) {
                 install(Logging) {
                     level = LogLevel.INFO
+                    sanitizeHeader { it == HttpHeaders.Authorization }   // never log tokens
                     logger = object : Logger {
                         override fun log(message: String) {
                             println("Ktor: $message")
@@ -82,18 +83,22 @@ object HttpClientFactory {
             install(Auth) {
                 bearer {
                     loadTokens {
-                        // Access Token from secure storage
-                        BearerTokens(
-                            accessTokenStorage.get() ?: "",
-                            refreshTokenStorage.get() ?: ""
-                        )
+                        // From secure storage; return null when signed out
+                        accessTokenStorage.get()?.let { access ->
+                            BearerTokens(access, refreshTokenStorage.get())
+                        }
                     }
-                    refreshTokens {
-                        // Refresh token logic
-                        val newTokens = authApi.refreshToken()
-                        accessTokenStorage.save(newTokens.accessToken)
-                        refreshTokenStorage.save(newTokens.refreshToken)
-                        BearerTokens(newTokens.accessToken, newTokens.refreshToken)
+                    // Runs once on 401; concurrent 401s wait for it, then retry with the new token
+                    refreshTokens {  // this: RefreshTokensParams (client, oldTokens, response)
+                        val refresh = oldTokens?.refreshToken ?: return@refreshTokens null
+                        val new: TokenResponse = client.post("auth/refresh") {
+                            markAsRefreshTokenRequest()   // excludes this call from auth retry — prevents refresh loops
+                            contentType(ContentType.Application.Json)  // required: ContentNegotiation skips bodies with no Content-Type
+                            setBody(RefreshRequest(refresh))
+                        }.body()
+                        accessTokenStorage.save(new.accessToken)
+                        refreshTokenStorage.save(new.refreshToken)
+                        BearerTokens(new.accessToken, new.refreshToken)
                     }
                 }
             }
@@ -111,16 +116,14 @@ object HttpClientFactory {
             HttpResponseValidator {
                 handleResponseExceptionWithRequest { exception, request ->
                     when (exception) {
-                        is ClientRequestException -> {
-                            val statusCode = exception.response.status.value
-                            when (statusCode) {
+                        is ClientRequestException -> {              // 4xx only
+                            when (exception.response.status.value) {
                                 401 -> throw UnauthorizedException()
                                 403 -> throw ForbiddenException()
                                 404 -> throw NotFoundException()
-                                in 500..599 -> throw ServerException()
                             }
                         }
-                        is ServerResponseException -> throw ServerException()
+                        is ServerResponseException -> throw ServerException()   // 5xx
                     }
                 }
             }
@@ -169,7 +172,7 @@ actual fun platformEngine(): HttpClientEngineFactory<*> = Darwin
 // HttpClient(Darwin) {
 //     engine {
 //         configureRequest { setAllowsCellularAccess(true) }
-//         configureSession { setHTTPMaximumConnectionsPerHost(5u) }
+//         configureSession { setHTTPMaximumConnectionsPerHost(5) }   // NSInteger, not UInt
 //     }
 // }
 ```
@@ -212,7 +215,7 @@ class UserApi(
 
     suspend fun uploadAvatar(userId: String, file: ByteArray): String {
         return client.submitFormWithBinaryData(
-            url = "https://api.example.com/users/$userId/avatar",
+            url = "/users/$userId/avatar",   // resolved against defaultRequest base URL
             formData = formData {
                 append("avatar", file, Headers.build {
                     append(HttpHeaders.ContentDisposition, "filename=avatar.jpg")
@@ -227,6 +230,8 @@ class UserApi(
 
 ```kotlin
 // commonMain/kotlin/network/NetworkExceptions.kt
+// sealed is implicitly abstract — never construct NetworkException directly;
+// every branch below must map to a concrete subclass (hence UnknownNetworkException).
 sealed class NetworkException(message: String? = null) : Exception(message)
 
 class UnauthorizedException : NetworkException("User not authenticated")
@@ -235,6 +240,8 @@ class NotFoundException : NetworkException("Resource not found")
 class ServerException : NetworkException("Server error occurred")
 class NetworkUnavailableException : NetworkException("Network unavailable")
 class TimeoutException : NetworkException("Request timeout")
+class UnknownNetworkException(message: String? = null) :
+    NetworkException(message ?: "Unknown network error")
 
 // Wrap Ktor exceptions
 fun Throwable.toNetworkException(): NetworkException {
@@ -244,13 +251,13 @@ fun Throwable.toNetworkException(): NetworkException {
             401 -> UnauthorizedException()
             403 -> ForbiddenException()
             404 -> NotFoundException()
-            else -> NetworkException(message)
+            else -> UnknownNetworkException(message)
         }
         is ServerResponseException -> ServerException()
         is HttpRequestTimeoutException -> TimeoutException()
         is ConnectTimeoutException,
         is SocketTimeoutException -> NetworkUnavailableException()
-        else -> NetworkException(message ?: "Unknown network error")
+        else -> UnknownNetworkException(message)
     }
 }
 ```
@@ -263,12 +270,12 @@ sealed class ApiResult<out T> {
     data class Success<T>(val data: T) : ApiResult<T>()
     data class Error(val error: NetworkException) : ApiResult<Nothing>()
 
-    suspend fun <R> map(transform: (T) -> R): ApiResult<R> = when (this) {
+    fun <R> map(transform: (T) -> R): ApiResult<R> = when (this) {
         is Success -> Success(transform(data))
         is Error -> this
     }
 
-    suspend fun <R> flatMap(transform: (T) -> ApiResult<R>): ApiResult<R> = when (this) {
+    fun <R> flatMap(transform: (T) -> ApiResult<R>): ApiResult<R> = when (this) {
         is Success -> transform(data)
         is Error -> this
     }
@@ -278,7 +285,8 @@ sealed class ApiResult<out T> {
         is Error -> null
     }
 
-    fun getOrElse(defaultValue: T): T = when (this) {
+    // @UnsafeVariance: 'out T' in an in-position; safe here since the value is only returned
+    fun getOrElse(defaultValue: @UnsafeVariance T): T = when (this) {
         is Success -> data
         is Error -> defaultValue
     }
@@ -286,6 +294,8 @@ sealed class ApiResult<out T> {
 
 suspend fun <T> apiCall(block: suspend () -> T): ApiResult<T> = try {
     ApiResult.Success(block())
+} catch (e: CancellationException) {
+    throw e   // never swallow cancellation — it must propagate for structured concurrency
 } catch (e: Exception) {
     ApiResult.Error(e.toNetworkException())
 }
@@ -300,54 +310,46 @@ when (result) {
 
 ## Retry Logic
 
+Use Ktor's built-in `HttpRequestRetry` plugin instead of hand-rolled retry loops. Install it **before** `HttpTimeout` in the client config:
+
 ```kotlin
-// commonMain/kotlin/network/Retry.kt
-suspend fun <T> retryApiCall(
-    maxRetries: Int = 3,
-    delayMs: Long = 1000,
-    block: suspend () -> T
-): T {
-    var lastException: Exception? = null
-    repeat(maxRetries) { attempt ->
-        try {
-            return block()
-        } catch (e: Exception) {
-            lastException = e
-            if (e is NetworkUnavailableException || e is TimeoutException) {
-                if (attempt < maxRetries - 1) {
-                    delay(delayMs * (attempt + 1))
-                }
-            } else {
-                throw e
-            }
-        }
+install(HttpRequestRetry) {           // must come before install(HttpTimeout)
+    maxRetries = 3
+    retryOnServerErrors()             // 5xx only — never retry 4xx
+    retryOnExceptionIf { _, cause ->  // transient transport failures
+        cause is ConnectTimeoutException || cause is SocketTimeoutException
     }
-    throw lastException ?: RuntimeException("Max retries exceeded")
+    exponentialDelay()                // backoff: 1s, 2s, 4s (+ jitter)
 }
 ```
+
+Only retry idempotent requests by default; for POSTs, gate with `retryIf { request, response -> ... }` on the method. Use `modifyRequest { }` to add e.g. an idempotency-key or retry-count header.
 
 ## Offline Support
 
 ```kotlin
-// commonMain/kotlin/network/OfflineCapableApi.kt
-import kotlin.time.Clock   // moved from kotlinx.datetime.Clock in datetime 0.7
+// commonMain/kotlin/network/CachingApi.kt
+import kotlin.time.Clock      // moved from kotlinx.datetime.Clock in datetime 0.7
+import kotlin.time.Duration
 
 class CachingApi(private val cache: DatabaseCache) {
 
+    // No withContext(Dispatchers.IO): Dispatchers.IO is declared in coroutines'
+    // *concurrent* source set (JVM + Native), so it does not resolve from commonMain.
+    // Ktor and SQLDelight suspend APIs are already non-blocking, so none is needed.
+    // To offload genuinely blocking work, add `expect val ioDispatcher: CoroutineDispatcher`.
     suspend fun <R> withCache(
         key: String,
         ttl: Duration,
         block: suspend () -> R
-    ): R = withContext(Dispatchers.IO) {
+    ): R {
         // Serve fresh cache while within TTL (Instant + Duration = Instant)
         cache.get<R>(key)?.let { cached ->
-            if (Clock.System.now() < cached.timestamp + ttl) {
-                return@withContext cached.data
-            }
+            if (Clock.System.now() < cached.timestamp + ttl) return cached.data
         }
 
         // Otherwise fetch, refresh the cache, and fall back to stale data on failure
-        try {
+        return try {
             val result = block()
             cache.put(key, CachedData(result, Clock.System.now()))
             result

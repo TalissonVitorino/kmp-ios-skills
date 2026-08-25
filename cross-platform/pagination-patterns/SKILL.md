@@ -9,12 +9,26 @@ description: Pagination patterns for mobile - Paging 3 for Android (PagingSource
 
 ```kotlin
 dependencies {
-    val pagingVersion = "3.5.0"
-    implementation("androidx.paging:paging-runtime-ktx:$pagingVersion")
-    implementation("androidx.paging:paging-compose:$pagingVersion")
+    val pagingVersion = "3.5.1"
+    implementation("androidx.paging:paging-compose:$pagingVersion") // brings in paging-common
+    implementation("androidx.paging:paging-runtime:$pagingVersion") // only for RecyclerView/PagingDataAdapter
     testImplementation("androidx.paging:paging-testing:$pagingVersion")
 }
 ```
+
+KMP note: `paging-common` and `paging-testing` went multiplatform in 3.3; `paging-compose` shipped only an Android artifact then and gained the non-Android targets (JVM/desktop, Apple, Linux, MinGW, JS, wasmJs) in 3.4.0. On 3.4+ both `Pager`/`PagingSource` and `collectAsLazyPagingItems()` can live in `commonMain`; `paging-runtime` (and the RxJava/Guava artifacts) stay Android-only.
+
+```kotlin
+// KMP: commonMain
+implementation("androidx.paging:paging-common:3.5.1")
+implementation("androidx.paging:paging-compose:3.5.1")
+// androidMain, only if you also use RecyclerView/PagingDataAdapter
+implementation("androidx.paging:paging-runtime:3.5.1")
+```
+
+Paging 3.5 added `append()`, `prepend()`, `refresh()`, `refresh(item)` and `retry()` as members on `Pager` itself, for driving loads without a UI presenter, plus the `Flow<PagingData<T>>.asItemSnapshotListFlow()` operator, which converts the stream into a `Flow<ItemSnapshotList<T>>` that can be combined with other sources, shared by multiple collectors without `cachedIn`, or exposed as part of UI state.
+
+For deeper Android-specific coverage prefer `android-skills:paging`.
 
 ## PagingSource Implementation
 
@@ -25,33 +39,44 @@ class ArticlePagingSource(
 ) : PagingSource<Int, Article>() {
 
     override suspend fun load(params: LoadParams<Int>): LoadResult<Int, Article> {
-        val page = params.key ?: 1
+        val page = params.key ?: STARTING_PAGE
         return try {
             val response = api.searchArticles(
                 query = query,
                 page = page,
+                // REFRESH asks for initialLoadSize, APPEND/PREPEND for pageSize
                 pageSize = params.loadSize
             )
             LoadResult.Page(
                 data = response.articles,
-                prevKey = if (page == 1) null else page - 1,
-                nextKey = if (response.articles.isEmpty()) null else page + 1
+                prevKey = if (page == STARTING_PAGE) null else page - 1,
+                // Advance by the number of pages actually consumed. With
+                // initialLoadSize > pageSize, a plain `page + 1` re-fetches rows
+                // the first load already returned.
+                nextKey = if (response.articles.isEmpty()) null
+                          else page + (params.loadSize / PAGE_SIZE)
             )
         } catch (e: IOException) {
             LoadResult.Error(e)
-        } catch (e: HttpException) {
+        } catch (e: HttpException) { // Retrofit; with Ktor catch ResponseException instead
             LoadResult.Error(e)
         }
     }
 
-    override fun getRefreshKey(state: PagingState<Int, Article>): Int? {
-        return state.anchorPosition?.let { anchor ->
-            state.closestPageToPosition(anchor)?.prevKey?.plus(1)
-                ?: state.closestPageToPosition(anchor)?.nextKey?.minus(1)
+    override fun getRefreshKey(state: PagingState<Int, Article>): Int? =
+        state.anchorPosition?.let { anchor ->
+            val closest = state.closestPageToPosition(anchor)
+            closest?.prevKey?.plus(1) ?: closest?.nextKey?.minus(1)
         }
+
+    private companion object {
+        const val STARTING_PAGE = 1
+        const val PAGE_SIZE = 20 // must equal PagingConfig.pageSize
     }
 }
 ```
+
+`load` runs in a cancellable coroutine: never wrap it in a blanket `catch (e: Exception)` without rethrowing `CancellationException` (see the cursor example below).
 
 ## Cursor-Based PagingSource
 
@@ -71,6 +96,8 @@ class CursorArticlePagingSource(
                 prevKey = null, // cursor-based usually does not support backward
                 nextKey = response.nextCursor
             )
+        } catch (e: CancellationException) {
+            throw e // never swallow cancellation
         } catch (e: Exception) {
             LoadResult.Error(e)
         }
@@ -91,8 +118,9 @@ class ArticleRepository(private val api: ArticleApi) {
                 pageSize = 20,
                 prefetchDistance = 5,
                 enablePlaceholders = false,
-                initialLoadSize = 40,  // first load is usually 2x pageSize
-                maxSize = 200          // cap cached pages
+                initialLoadSize = 40,  // default is 3 * pageSize; 2x is a common tighter choice
+                maxSize = 200          // cap cached items; must be >= pageSize + 2 * prefetchDistance
+                                       // (with enablePlaceholders = false, dropped pages can jump scroll)
             ),
             pagingSourceFactory = { ArticlePagingSource(api, query) }
         ).flow
@@ -103,6 +131,7 @@ class ArticleRepository(private val api: ArticleApi) {
 ## ViewModel Integration
 
 ```kotlin
+@OptIn(FlowPreview::class, ExperimentalCoroutinesApi::class)
 class ArticleListViewModel(
     private val repository: ArticleRepository
 ) : ViewModel() {
@@ -133,7 +162,8 @@ fun ArticleListScreen(viewModel: ArticleListViewModel = koinViewModel()) {
     LazyColumn {
         items(
             count = articles.itemCount,
-            key = articles.itemKey { it.id }
+            key = articles.itemKey { it.id },
+            contentType = articles.itemContentType()
         ) { index ->
             val article = articles[index]
             if (article != null) {
@@ -162,36 +192,35 @@ fun ArticleListScreen(viewModel: ArticleListViewModel = koinViewModel()) {
 ## Load State Handling
 
 ```kotlin
+// PullToRefreshBox is stable since material3 1.4.0;
+// on 1.3.x it still needs @OptIn(ExperimentalMaterial3Api::class).
 @Composable
 fun PaginatedList(articles: LazyPagingItems<Article>) {
-    Box(modifier = Modifier.fillMaxSize()) {
-        // Initial loading state
-        when (articles.loadState.refresh) {
-            is LoadState.Loading -> {
-                CircularProgressIndicator(modifier = Modifier.align(Alignment.Center))
-            }
-            is LoadState.Error -> {
-                val error = (articles.loadState.refresh as LoadState.Error).error
-                ErrorScreen(
-                    message = error.localizedMessage ?: "Unknown error",
-                    onRetry = { articles.refresh() }
-                )
-            }
-            is LoadState.NotLoading -> {
-                if (articles.itemCount == 0) {
-                    EmptyState(message = "No articles found")
-                } else {
-                    ArticleLazyColumn(articles = articles)
-                }
+    val refresh = articles.loadState.refresh
+    when {
+        // Full-screen states only when there is nothing cached to show
+        refresh is LoadState.Loading && articles.itemCount == 0 -> {
+            Box(Modifier.fillMaxSize()) {
+                CircularProgressIndicator(Modifier.align(Alignment.Center))
             }
         }
-
-        // Pull to refresh
-        PullToRefreshBox(
-            isRefreshing = articles.loadState.refresh is LoadState.Loading,
-            onRefresh = { articles.refresh() }
-        ) {
-            ArticleLazyColumn(articles = articles)
+        refresh is LoadState.Error && articles.itemCount == 0 -> {
+            ErrorScreen(
+                message = refresh.error.localizedMessage ?: "Unknown error",
+                onRetry = { articles.retry() }
+            )
+        }
+        refresh is LoadState.NotLoading && articles.itemCount == 0 -> {
+            EmptyState(message = "No articles found")
+        }
+        // Content with pull-to-refresh (material3 PullToRefreshBox)
+        else -> {
+            PullToRefreshBox(
+                isRefreshing = refresh is LoadState.Loading,
+                onRefresh = { articles.refresh() }
+            ) {
+                ArticleLazyColumn(articles = articles)
+            }
         }
     }
 }
@@ -208,6 +237,11 @@ class ArticleRemoteMediator(
 
     private val articleDao = database.articleDao()
     private val remoteKeyDao = database.remoteKeyDao()
+
+    // Default is LAUNCH_INITIAL_REFRESH; return SKIP_INITIAL_REFRESH while the
+    // cached data is still fresh enough to show without hitting the network.
+    override suspend fun initialize(): InitializeAction =
+        InitializeAction.LAUNCH_INITIAL_REFRESH
 
     override suspend fun load(
         loadType: LoadType,
@@ -227,7 +261,7 @@ class ArticleRemoteMediator(
         return try {
             val response = api.getArticles(page = page, pageSize = state.config.pageSize)
 
-            database.withTransaction {
+            database.withTransaction { // androidx.room.withTransaction, from room-ktx
                 if (loadType == LoadType.REFRESH) {
                     articleDao.deleteAll()
                     remoteKeyDao.deleteByKey("articles")
@@ -242,6 +276,8 @@ class ArticleRemoteMediator(
             }
 
             MediatorResult.Success(endOfPaginationReached = response.articles.isEmpty())
+        } catch (e: CancellationException) {
+            throw e
         } catch (e: Exception) {
             MediatorResult.Error(e)
         }
@@ -258,6 +294,8 @@ fun getOfflineArticles(): Flow<PagingData<ArticleEntity>> {
     ).flow
 }
 ```
+
+`CombinedLoadStates` exposes `source` and `mediator` separately. With a RemoteMediator the local `PagingSource` resolves almost instantly from the database, so drive the network spinner and retry affordances from `loadState.mediator?.refresh` / `?.append`, not from `loadState.source`.
 
 ## RemoteKey Entity
 
@@ -286,12 +324,15 @@ interface RemoteKeyDao {
 ### AsyncSequence-Based Pagination
 
 ```swift
+@MainActor
 @Observable
-class ArticleListViewModel {
-    var articles: [Article] = []
-    var isLoading = false
-    var hasMore = true
+final class ArticleListViewModel {
+    private(set) var articles: [Article] = []
+    private(set) var isLoading = false
+    private(set) var hasMore = true
     private var currentPage = 1
+    private let pageSize = 20
+    private let api = ArticleAPI()
 
     func loadNextPage() async {
         guard !isLoading, hasMore else { return }
@@ -299,16 +340,20 @@ class ArticleListViewModel {
         defer { isLoading = false }
 
         do {
-            let response = try await api.getArticles(page: currentPage, pageSize: 20)
+            let response = try await api.getArticles(page: currentPage, pageSize: pageSize)
             articles.append(contentsOf: response.articles)
-            hasMore = !response.articles.isEmpty
+            // A short page means the server has nothing left; `!isEmpty` would cost
+            // one extra round trip that returns zero rows.
+            hasMore = response.articles.count == pageSize
             currentPage += 1
         } catch {
-            // handle error
+            // Surface the error; leave hasMore == true so the user can retry.
         }
     }
 }
 ```
+
+There is no Paging-3 equivalent on the Swift side. In a KMP project you can keep the `Pager` in `commonMain` and consume it from Compose Multiplatform, but `PagingData`/`Flow` do not bridge cleanly to SwiftUI - for a SwiftUI UI either wrap the flow in a Swift-friendly observable or paginate manually as above.
 
 ### SwiftUI List with Pagination Trigger
 
@@ -320,7 +365,7 @@ struct ArticleListView: View {
         List(viewModel.articles) { article in
             ArticleRow(article: article)
                 .onAppear {
-                    if article == viewModel.articles.last {
+                    if article.id == viewModel.articles.last?.id {
                         Task { await viewModel.loadNextPage() }
                     }
                 }
@@ -376,12 +421,14 @@ data class PaginatedResponse<T>(
 
 @Serializable
 data class Pagination(
-    val nextCursor: String? = null,
-    val hasMore: Boolean = false,
+    @SerialName("next_cursor") val nextCursor: String? = null,
+    @SerialName("has_more") val hasMore: Boolean = false,
     val page: Int? = null,
-    val totalCount: Int? = null
+    @SerialName("total_count") val totalCount: Int? = null
 )
 ```
+
+(Or configure `Json { namingStrategy = JsonNamingStrategy.SnakeCase }` instead of per-field `@SerialName`.)
 
 ## Best Practices
 
@@ -389,7 +436,8 @@ data class Pagination(
 - Use offset-based pagination when total count or page jumping is required.
 - Set `prefetchDistance` to 3-5 items so loading starts before the user reaches the end.
 - Use `RemoteMediator` for offline-capable paginated lists backed by a local database.
-- Always handle all three load states: `refresh`, `append`, and `prepend`.
-- Cache `PagingData` in `viewModelScope` with `.cachedIn()` to survive configuration changes.
+- Handle `refresh` and `append`; only handle `prepend` when the source can actually load backwards (page-keyed feeds with `prevKey`, or a Room-backed list keyed to a mid-list anchor).
+- Call `.cachedIn(viewModelScope)` exactly once, as the last operator on the flow - it is what makes the flow multicast and survive configuration changes. Operators applied after it run again on every collection.
 - Show shimmer placeholders during initial load; show a footer spinner for append loads.
 - Implement pull-to-refresh by calling `articles.refresh()` on `LazyPagingItems`.
+- Test with `paging-testing`: `pager.flow.asSnapshot { scrollTo(index) }` returns the loaded `List<T>` without a UI, and `PagingSource.load()` can be called directly with a hand-built `LoadParams.Refresh`.

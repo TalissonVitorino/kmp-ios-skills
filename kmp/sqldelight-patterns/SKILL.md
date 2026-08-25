@@ -48,14 +48,16 @@ Place `.sq` files in `src/commonMain/sqldelight/com/example/db/`.
 
 ```sql
 -- User.sq
+import com.example.db.UserStatus;
+import kotlin.time.Instant;
 
 CREATE TABLE User (
     id INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT,
     display_name TEXT NOT NULL,
     email TEXT NOT NULL UNIQUE,
     avatar_url TEXT,
-    status TEXT NOT NULL DEFAULT 'active',
-    created_at INTEGER NOT NULL
+    status TEXT AS UserStatus NOT NULL DEFAULT 'active',
+    created_at INTEGER AS Instant NOT NULL
 );
 
 CREATE INDEX idx_user_email ON User(email);
@@ -172,6 +174,11 @@ actual class DriverFactory {
 
 ## Type Adapters
 
+SQLite stores only `INTEGER`, `REAL`, `TEXT`, `BLOB`. Any other Kotlin type declared with `AS` needs a `ColumnAdapter` passed to the generated `<Table>.Adapter`. Two exceptions worth knowing:
+
+- Plain narrowing (`INTEGER AS Int`, `REAL AS Float`) is covered by `IntColumnAdapter` / `FloatColumnAdapter` in `primitive-adapters` — do not hand-write these.
+- `INTEGER AS Boolean` is handled natively by the SQLite dialect with no adapter, but since 2.0 every primitive used in a `.sq`/`.sqm` file must be imported explicitly: `import kotlin.Boolean;`.
+
 ```kotlin
 // Enum adapter
 val statusAdapter = object : ColumnAdapter<UserStatus, String> {
@@ -203,35 +210,31 @@ val database = AppDatabase(
 
 ## Migration Strategy
 
-Place migration files in `src/commonMain/sqldelight/databases/migrations/`.
+Place `.sqm` files in `src/commonMain/sqldelight/migrations/` (a sibling of the package folders holding `.sq` files). Do not put them in `databases/` — that is the `schemaOutputDirectory`, which holds the generated `.db` schema snapshots used for verification.
+
+A migration file is named `<version to upgrade from>.sqm`, and the first schema version is 1. The `.sq` files always describe the *current* schema and are what `Schema.create()` runs on a fresh install; `.sqm` files only describe upgrades, so a column that appears in a `.sqm` is expected to also be present in the `CREATE TABLE`.
 
 ```sql
--- 1.sqm (migration from version 1 to 2)
+-- 1.sqm (upgrades version 1 -> 2)
 ALTER TABLE User ADD COLUMN avatar_url TEXT;
 
--- 2.sqm (migration from version 2 to 3)
+-- 2.sqm (upgrades version 2 -> 3)
 CREATE INDEX idx_user_created_at ON User(created_at);
 ALTER TABLE User ADD COLUMN status TEXT NOT NULL DEFAULT 'active';
 ```
 
-Enable migration verification in Gradle:
+Verification is two settings, both shown in the Gradle block above:
 
-```kotlin
-sqldelight {
-    databases {
-        create("AppDatabase") {
-            verifyMigrations.set(true)
-        }
-    }
-}
-```
+- `verifyMigrations` defaults to `false`; setting it to `true` fails the build on a broken migration, and also when no `.db` snapshot is found at all.
+- `schemaOutputDirectory` is unset by default. It does **not** gate verification — `verify<SourceSet><Database>Migration` is registered whenever `deriveSchemaFromMigrations` is off (the default) and is wired into both `check` and the aggregate `verifySqlDelightMigration` task. What `schemaOutputDirectory` gates is `generate<SourceSet><Database>Schema`, the task that *writes* the snapshots; without snapshots the verify task runs but has nothing to compare against.
+
+So generate a `.db` snapshot of each released schema version with `./gradlew generateCommonMainAppDatabaseSchema` before writing the next migration. The verify task then replays the `.sqm` files onto each snapshot and asserts the result matches the current `.sq` schema.
 
 ## Coroutines Flow Extension
 
 ```kotlin
 import app.cash.sqldelight.coroutines.asFlow
 import app.cash.sqldelight.coroutines.mapToList
-import app.cash.sqldelight.coroutines.mapToOne
 import app.cash.sqldelight.coroutines.mapToOneOrNull
 
 class UserRepository(private val database: AppDatabase) {
@@ -248,11 +251,11 @@ class UserRepository(private val database: AppDatabase) {
 
     suspend fun insert(user: User) = withContext(Dispatchers.IO) {
         database.userQueries.insert(
-            display_name = user.displayName,
+            display_name = user.display_name,
             email = user.email,
-            avatar_url = user.avatarUrl,
+            avatar_url = user.avatar_url,
             status = user.status,
-            created_at = user.createdAt
+            created_at = user.created_at
         )
     }
 
@@ -265,17 +268,22 @@ class UserRepository(private val database: AppDatabase) {
             database.userQueries.deleteAll()
             users.forEach { user ->
                 database.userQueries.insert(
-                    display_name = user.displayName,
+                    display_name = user.display_name,
                     email = user.email,
-                    avatar_url = user.avatarUrl,
+                    avatar_url = user.avatar_url,
                     status = user.status,
-                    created_at = user.createdAt
+                    created_at = user.created_at
                 )
             }
         }
     }
 }
 ```
+
+Two things this example depends on:
+
+- Generated row classes keep the column names verbatim (`display_name`, not `displayName`). Either use the snake_case names, or map the generated row to a domain model at the repository boundary so snake_case does not leak upward.
+- `Dispatchers.IO` lives in the JVM + Native source sets of kotlinx-coroutines, so it resolves from `commonMain` only while every target of that source set is Android/JVM or Native. Add a JS or wasm target and it disappears — switch to an `expect val ioDispatcher: CoroutineDispatcher` (or `Dispatchers.Default`) then.
 
 ## KMP Module Structure
 
@@ -290,8 +298,10 @@ shared/
       sqldelight/com/example/db/
         User.sq
         Post.sq
-      sqldelight/databases/
+      sqldelight/migrations/
         1.sqm
+      sqldelight/databases/
+        1.db                      (generated schema snapshot)
     androidMain/
       kotlin/com/example/db/
         DriverFactory.android.kt  (actual class)
@@ -301,6 +311,8 @@ shared/
 ```
 
 ## Testing with In-Memory Driver
+
+`JdbcSqliteDriver` is JVM-only (`app.cash.sqldelight:sqlite-driver:2.3.2`) — put these tests in `jvmTest` or `androidUnitTest`, not `commonTest`.
 
 ```kotlin
 class UserRepositoryTest {
@@ -332,6 +344,19 @@ class UserRepositoryTest {
 }
 ```
 
+## Dialect Selection
+
+The dialect defaults to SQLite 3.18; in a module that applies an Android Gradle plugin, SQLDelight instead picks the newest dialect supported by `minSdk`. Set it explicitly inside the database block when you need newer syntax:
+
+```kotlin
+create("AppDatabase") {
+    packageName.set("com.example.db")
+    dialect("app.cash.sqldelight:sqlite-3-38-dialect:2.3.2")
+}
+```
+
+Published dialects: `sqlite-3-18` (default), `-3-24`, `-3-25`, `-3-30`, `-3-33`, `-3-35`, `-3-38`. Upsert (`ON CONFLICT DO UPDATE`) needs 3.24, window functions 3.25, `RETURNING` 3.35. The dialect only controls what the *compiler* accepts — the SQLite shipped with the OS still has to support it at runtime, and on Android that version tracks the API level, so a low `minSdk` is the real constraint. To use newer syntax on old Android devices, ship your own SQLite: `io.requery:sqlite-android` exposes a `SupportSQLiteOpenHelper.Factory` you pass as the `factory` argument of `AndroidSqliteDriver`.
+
 ## Best Practices
 
 - Let SQLDelight generate type-safe Kotlin code from `.sq` files; do not write manual SQL wrappers.
@@ -340,4 +365,4 @@ class UserRepositoryTest {
 - Use `.asFlow().mapToList()` for reactive UI; use direct query calls for one-shot reads.
 - Keep `.sq` files organized by table name, one file per table.
 - Enable `verifyMigrations` to catch schema drift at build time.
-- Prefer `INSERT OR REPLACE` for upsert semantics in .sq files.
+- For upserts, know that `INSERT OR REPLACE` deletes the conflicting row and re-inserts it (new autoincrement id, `ON DELETE` cascades fire). Prefer `INSERT ... ON CONFLICT(...) DO UPDATE` — see Dialect Selection above.

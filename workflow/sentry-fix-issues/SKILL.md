@@ -3,9 +3,11 @@ name: sentry-fix-issues
 description: Find and fix issues from Sentry using MCP. Use when asked to fix Sentry errors, debug production issues, investigate exceptions, or resolve bugs reported in Sentry. Methodically analyzes stack traces, breadcrumbs, traces, and context to identify root causes.
 license: Apache-2.0
 category: workflow
+parent: sentry-workflow
+disable-model-invocation: true
 ---
 
-> Adapted from [getsentry/sentry-skills](https://github.com/getsentry/sentry-skills) (Apache-2.0). Standalone here: the original's parent-skill breadcrumb and `disable-model-invocation` flag were removed so it can be invoked on its own. Requires the [Sentry MCP server](https://mcp.sentry.dev).
+> [All Skills](../../SKILL_TREE.md) > [Workflow](../sentry-workflow/SKILL.md) > Fix Issues
 
 # Fix Sentry Issues
 

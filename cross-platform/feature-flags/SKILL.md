@@ -37,7 +37,7 @@ sealed class FeatureFlag<T>(
 
     // Numeric flags
     object MaxCartItems : FeatureFlag<Int>("max_cart_items", 50)
-    object SearchDebounceMs : FeatureFlag<Long>("search_debounce_ms", 300L)
+    object SearchDebounceMs : FeatureFlag<Int>("search_debounce_ms", 300)
 }
 
 // Type-safe evaluation
@@ -62,8 +62,10 @@ class FeatureFlagManager(private val provider: FeatureFlagProvider) {
 
 ### Setup and Initialization
 
+Dependency: `com.google.firebase:firebase-config` via the Firebase BoM (34.18.0 → firebase-config 23.1.0). KTX APIs moved into the main module in BoM 32.5.0 and the `-ktx` artifacts were removed in BoM 34.0.0 — depend on `firebase-config`, never `firebase-config-ktx`.
+
 ```kotlin
-class FirebaseFeatureFlagProvider(context: Context) : FeatureFlagProvider {
+class FirebaseFeatureFlagProvider : FeatureFlagProvider {
     private val remoteConfig = Firebase.remoteConfig.apply {
         val configSettings = remoteConfigSettings {
             minimumFetchIntervalInSeconds = if (BuildConfig.DEBUG) 0 else 3600
@@ -72,6 +74,8 @@ class FirebaseFeatureFlagProvider(context: Context) : FeatureFlagProvider {
         setDefaultsAsync(R.xml.remote_config_defaults)
     }
 
+    // getBoolean/getDouble have no per-call default — a key absent from the
+    // XML defaults returns false/0.0. Register every flag in the defaults XML.
     override fun getBooleanFlag(key: String, default: Boolean): Boolean {
         return remoteConfig.getBoolean(key)
     }
@@ -92,6 +96,17 @@ class FirebaseFeatureFlagProvider(context: Context) : FeatureFlagProvider {
         remoteConfig.fetchAndActivate().await()
     }
 }
+```
+
+For server-pushed updates without polling, use the real-time listener (firebase-config 21.3.0+):
+
+```kotlin
+remoteConfig.addOnConfigUpdateListener(object : ConfigUpdateListener {
+    override fun onUpdate(configUpdate: ConfigUpdate) {
+        remoteConfig.activate() // configUpdate.updatedKeys lists changed flags
+    }
+    override fun onError(error: FirebaseRemoteConfigException) { /* log */ }
+})
 ```
 
 ### Default Values (res/xml/remote_config_defaults.xml)
@@ -136,13 +151,13 @@ final class FirebaseFeatureFlagProvider: FeatureFlagProvider {
     }
 
     func getStringFlag(key: String, defaultValue: String) -> String {
+        // stringValue is non-optional since Firebase Apple SDK 11
         let value = remoteConfig.configValue(forKey: key).stringValue
-        return value?.isEmpty == false ? value! : defaultValue
+        return value.isEmpty ? defaultValue : value
     }
 
     func refresh() async throws {
-        let status = try await remoteConfig.fetchAndActivate()
-        print("Remote config fetch status: \(status)")
+        _ = try await remoteConfig.fetchAndActivate()
     }
 }
 ```
@@ -153,8 +168,12 @@ final class FirebaseFeatureFlagProvider: FeatureFlagProvider {
 
 ### Android SDK Initialization
 
+Dependency: `com.launchdarkly:launchdarkly-android-client-sdk` 5.x (5.14.x current; SDK 5.x uses `LDContext`, the 4.x `LDUser` API is gone).
+
 ```kotlin
-class LaunchDarklyProvider(context: Context) : FeatureFlagProvider {
+// LDClient.init requires the Application, not a Context, and blocks up to
+// startWaitSeconds — call it once from Application.onCreate, off the hot path.
+class LaunchDarklyProvider(application: Application) : FeatureFlagProvider {
     private val client: LDClient
 
     init {
@@ -165,7 +184,7 @@ class LaunchDarklyProvider(context: Context) : FeatureFlagProvider {
             .set("email", "user@example.com")
             .set("plan", "premium")
             .build()
-        client = LDClient.init(context.applicationContext, ldConfig, ldContext, 5)
+        client = LDClient.init(application, ldConfig, ldContext, 5)
     }
 
     override fun getBooleanFlag(key: String, default: Boolean): Boolean {
@@ -205,6 +224,7 @@ class LaunchDarklyProvider(context: Context) : FeatureFlagProvider {
 ```kotlin
 // build.gradle.kts
 android {
+    buildFeatures { buildConfig = true } // off by default since AGP 8
     buildTypes {
         debug {
             buildConfigField("boolean", "ENABLE_DEV_TOOLS", "true")
@@ -225,20 +245,29 @@ if (BuildConfig.ENABLE_DEV_TOOLS) {
 
 ### Debug Menu Toggle
 
+Layer debug overrides over a real provider. Interface delegation (`by delegate`) supplies
+the members you do not override — a class that declares `: FeatureFlagProvider` and
+implements only `getBooleanFlag` does not compile.
+
 ```kotlin
 class LocalFeatureFlagProvider(
-    private val prefs: SharedPreferences
-) : FeatureFlagProvider {
-    override fun getBooleanFlag(key: String, default: Boolean): Boolean {
-        return prefs.getBoolean("flag_$key", default)
-    }
+    private val prefs: SharedPreferences,
+    private val delegate: FeatureFlagProvider
+) : FeatureFlagProvider by delegate {
+
+    override fun getBooleanFlag(key: String, default: Boolean): Boolean =
+        if (prefs.contains("flag_$key")) prefs.getBoolean("flag_$key", default)
+        else delegate.getBooleanFlag(key, default)
 
     fun overrideFlag(key: String, value: Boolean) {
         prefs.edit().putBoolean("flag_$key", value).apply()
     }
 
+    // edit().clear() would wipe every preference in the file, not just the overrides
     fun clearOverrides() {
-        prefs.edit().clear().apply()
+        val editor = prefs.edit()
+        prefs.all.keys.filter { it.startsWith("flag_") }.forEach(editor::remove)
+        editor.apply()
     }
 }
 ```
@@ -247,38 +276,42 @@ class LocalFeatureFlagProvider(
 
 ## KMP Shared Flags
 
+Use GitLive's Firebase Kotlin SDK (`dev.gitlive:firebase-config:2.6.0` in commonMain) — one implementation for both platforms, no expect/actual. It wraps the native Android and iOS Remote Config SDKs.
+
 ```kotlin
 // commonMain
-interface SharedFeatureFlags {
-    fun isEnabled(key: String, default: Boolean = false): Boolean
-    fun getString(key: String, default: String = ""): String
-}
+import dev.gitlive.firebase.Firebase
+import dev.gitlive.firebase.remoteconfig.remoteConfig
+import kotlin.time.Duration.Companion.hours
 
-// androidMain
-class AndroidFeatureFlags(context: Context) : SharedFeatureFlags {
+class SharedFeatureFlags {
     private val remoteConfig = Firebase.remoteConfig
-    override fun isEnabled(key: String, default: Boolean) = remoteConfig.getBoolean(key)
-    override fun getString(key: String, default: String) = remoteConfig.getString(key)
-}
 
-// iosMain
-class IosFeatureFlags : SharedFeatureFlags {
-    private val remoteConfig = RemoteConfig.remoteConfig()
-    override fun isEnabled(key: String, default: Boolean) =
-        remoteConfig.configValueForKey(key).boolValue
-    override fun getString(key: String, default: String) =
-        remoteConfig.configValueForKey(key).stringValue ?: default
+    suspend fun init() {
+        remoteConfig.settings { minimumFetchInterval = 1.hours }
+        remoteConfig.setDefaults("new_onboarding_v2" to false, "checkout_button_text" to "Buy Now")
+        remoteConfig.fetchAndActivate()
+    }
+
+    fun isEnabled(key: String): Boolean = remoteConfig.getValue(key).asBoolean()
+    fun getString(key: String): String = remoteConfig.getValue(key).asString()
+    fun getLong(key: String): Long = remoteConfig.getValue(key).asLong()
 }
 ```
+
+If you write the iosMain side against the native SDK instead (via CocoaPods cinterop), the class is exposed as `FIRRemoteConfig` — not `RemoteConfig` — and `stringValue` is non-optional.
 
 ---
 
 ## Gradual Rollout Pattern
 
+Prefer server-side percentage conditions (Firebase "random percentile", LaunchDarkly percentage rollouts) — they bucket consistently across platforms and let you dial rollouts without a release. Client-side bucketing is a fallback for locally-defined flags:
+
 ```kotlin
 class GradualRollout(private val userId: String) {
     fun isInRollout(flagKey: String, percentage: Int): Boolean {
-        val hash = "$flagKey-$userId".hashCode().absoluteValue
+        // toLong() before absoluteValue: Int.MIN_VALUE.absoluteValue overflows
+        val hash = "$flagKey-$userId".hashCode().toLong().absoluteValue
         return (hash % 100) < percentage
     }
 }

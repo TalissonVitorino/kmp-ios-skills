@@ -1,6 +1,8 @@
 ---
 name: navigation
 description: Navigation for Android and Kotlin Multiplatform/iOS apps - all three approaches in one place. (A) Jetpack Navigation Compose (androidx.navigation - NavController, NavHost, composable<Route>, type-safe @Serializable routes, nested graphs, bottom nav, deep links, results via SavedStateHandle). (B) Jetpack Navigation 3 / Nav3 (NavDisplay, NavKey, back-stack-as-state, scenes for dialog/bottom-sheet/list-detail/two-pane, multiple back stacks, conditional nav, Hilt/Koin) with a full recipe reference tree. (C) Multiplatform navigation (Voyager, Decompose, Compose Multiplatform Navigation, SwiftUI NavigationStack interop). Use for any navigation task - choosing an approach, NavHost setup, deep links, bottom tabs, passing arguments, or sharing navigation across Android and iOS.
+metadata:
+  last-updated: '2026-08-14'
 ---
 
 # Mobile Navigation (Android + KMP/iOS)
@@ -25,7 +27,7 @@ This skill unifies the three navigation approaches. Pick one with the table, the
 
 ```kotlin
 dependencies {
-    implementation("androidx.navigation:navigation-compose:2.9.7")
+    implementation("androidx.navigation:navigation-compose:2.9.8")
     implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.11.0")
 }
 ```
@@ -182,7 +184,7 @@ composable<Route.PostDetail>(
 
 # B. Jetpack Navigation 3 (Nav3) — Android (newer)
 
-Nav3 models the back stack as **observable state** you own (a `List<NavKey>`), rendered by `NavDisplay`. This section is the official Google guide; the deep recipes live in `references/` (bundled with this skill).
+Nav3 models the back stack as **observable state** you own (a `List<NavKey>`), rendered by `NavDisplay`. Now stable: `androidx.navigation3:navigation3-runtime` / `navigation3-ui` **1.1.6**, plus `androidx.lifecycle:lifecycle-viewmodel-navigation3` **2.11.0** for ViewModel scoping. This section is the official Google guide; the deep recipes live in `references/` (bundled with this skill).
 
 ## Migration & requirements
 
@@ -197,18 +199,19 @@ Nav3 models the back stack as **observable state** you own (a `List<NavKey>`), r
 
 **Basic API:** [Basic](references/android/guide/navigation/navigation-3/recipes/basic.md) · [Saveable back stack](references/android/guide/navigation/navigation-3/recipes/basicsaveable.md) · [Entry-provider DSL](references/android/guide/navigation/navigation-3/recipes/basicdsl.md)
 **Common UI:** [bottom bar + multiple back stacks](references/android/guide/navigation/navigation-3/recipes/common-ui.md)
-**Deep links:** [Basic](references/android/guide/navigation/navigation-3/recipes/deeplinks-basic.md) · [Advanced (synthetic back stack)](references/android/guide/navigation/navigation-3/recipes/deeplinks-advanced.md)
+**Deep links:** [Static URI](references/android/guide/navigation/navigation-3/recipes/deeplinks-staticuri.md) · [URI with arguments](references/android/guide/navigation/navigation-3/recipes/deeplinks-uriarguments.md) · [Synthetic back stack](references/android/guide/navigation/navigation-3/recipes/deeplinks-syntheticbackstack.md) · [Custom matcher](references/android/guide/navigation/navigation-3/recipes/deeplinks-custommatcher.md)
 **Scenes (built-in):** [Dialog](references/android/guide/navigation/navigation-3/recipes/dialog.md)
 **Scenes (custom):** [BottomSheet](references/android/guide/navigation/navigation-3/recipes/bottomsheet.md) · [List-Detail](references/android/guide/navigation/navigation-3/recipes/scenes-listdetail.md) · [Two-pane](references/android/guide/navigation/navigation-3/recipes/scenes-twopane.md)
 **Material Adaptive:** [List-Detail](references/android/guide/navigation/navigation-3/recipes/material-listdetail.md) · [Supporting Pane](references/android/guide/navigation/navigation-3/recipes/material-supportingpane.md)
-**Animations:** [override default/per-destination](references/android/guide/navigation/navigation-3/recipes/animations.md)
-**Back stack behavior:** [Multiple back stacks](references/android/guide/navigation/navigation-3/recipes/multiple-backstacks.md)
+**Animations:** [override default/per-destination](references/android/guide/navigation/navigation-3/recipes/animations.md) · [Conditional transitions](references/android/guide/navigation/navigation-3/recipes/conditional-transitions.md)
+**Back stack behavior:** [Multiple back stacks](references/android/guide/navigation/navigation-3/recipes/multiple-backstacks.md) — per-tab state incl. tab-reselect scroll-to-top
 **Conditional nav:** [auth / onboarding gating](references/android/guide/navigation/navigation-3/recipes/conditional.md)
+**Lifecycle:** [observe Lifecycle per NavEntry](references/android/guide/navigation/navigation-3/recipes/lifecycle-owner.md)
 **Architecture (modular):** [Hilt](references/android/guide/navigation/navigation-3/recipes/modular-hilt.md) · [Koin](references/android/guide/navigation/navigation-3/recipes/modular-koin.md)
 **ViewModel:** [passing arguments](references/android/guide/navigation/navigation-3/recipes/passingarguments.md)
-**Returning results:** [as events](references/android/guide/navigation/navigation-3/recipes/results-event.md) · [as state](references/android/guide/navigation/navigation-3/recipes/results-state.md)
+**Returning results:** [as events](references/android/guide/navigation/navigation-3/recipes/results-event.md) · [as state](references/android/guide/navigation/navigation-3/recipes/results-state.md) — `@Serializable` results (not `Parcelize`); pair `rememberSaveableStateHolderNavEntryDecorator()` with `rememberResultEventBusNavEntryDecorator()`
 
-> Keywords: NavDisplay, NavKey, NavEntry, entryProvider, Scenes, multiple back stacks, list-detail, two-pane, supporting pane. (Official Google content, Apache 2.0.)
+> Keywords: NavDisplay, NavKey, NavEntry, entryProvider, Scenes, multiple back stacks, list-detail, two-pane, supporting pane, DeepLinkRequest, UriDeepLinkMatcher. (Official Google content, Apache 2.0, synced 2026-08-14.)
 
 ---
 
@@ -230,7 +233,7 @@ object HomeScreen : Screen {
 data class DetailScreen(val id: String) : Screen {
     @Composable override fun Content() {
         val navigator = LocalNavigator.currentOrThrow
-        val model = rememberScreenModel { DetailScreenModel(id) }
+        val model = rememberScreenModel { DetailScreenModel(id, repo) }  // repo from DI (or voyager-koin's koinScreenModel)
         val user by model.state.collectAsState()
         // … render user; navigator.pop() to go back
     }

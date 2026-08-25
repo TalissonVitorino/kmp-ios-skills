@@ -66,11 +66,12 @@ Text(
 ### Minimum Touch Target Size
 
 ```kotlin
-// Material 3 enforces 48dp minimum automatically for clickable elements
-// For custom elements, ensure minimum size:
-IconButton(
-    onClick = { /* action */ },
-    modifier = Modifier.sizeIn(minWidth = 48.dp, minHeight = 48.dp)
+// Material 3 components enforce a 48dp minimum touch target automatically
+// (LocalMinimumInteractiveComponentSize). For custom clickable elements:
+Box(
+    modifier = Modifier
+        .minimumInteractiveComponentSize() // androidx.compose.material3
+        .clickable { /* action */ }
 ) {
     Icon(Icons.Default.Close, contentDescription = "Close dialog")
 }
@@ -93,13 +94,17 @@ Box(
 ### Grouping and Merging Semantics
 
 ```kotlin
-// Merge child semantics into a single announcement
+// Merge child semantics into one announcement: semantics(mergeDescendants = true).
+// clickable/toggleable already merge, so a clickable Row reads as one element.
+// To REPLACE child semantics with a custom description, use clearAndSetSemantics.
+// Order matters: clickable must come BEFORE clearAndSetSemantics in the chain,
+// otherwise the click action's semantics are cleared too.
 Row(
     modifier = Modifier
+        .clickable { onUserClick() }
         .clearAndSetSemantics {
             contentDescription = "Alice Johnson, Software Engineer, Online"
         }
-        .clickable { onUserClick() }
 ) {
     Avatar(url = user.avatarUrl)
     Column {
@@ -109,24 +114,21 @@ Row(
     OnlineIndicator(isOnline = user.isOnline)
 }
 
-// Role assignment
+// Role assignment: prefer the role parameter on the gesture modifier
 Box(
-    modifier = Modifier
-        .clickable { onAction() }
-        .semantics { role = Role.Button }
+    modifier = Modifier.clickable(role = Role.Button) { onAction() }
 ) {
     Text("Custom Button")
 }
 
-// Tab role
+// Tabs: selectable() sets both the selected state and the role
 Text(
     text = tabTitle,
-    modifier = Modifier
-        .clickable { onTabSelect() }
-        .semantics {
-            role = Role.Tab
-            selected = isSelected
-        }
+    modifier = Modifier.selectable(
+        selected = isSelected,
+        role = Role.Tab,
+        onClick = { onTabSelect() }
+    )
 )
 ```
 
@@ -154,20 +156,15 @@ Row(
 ### Traversal Order
 
 ```kotlin
-Column(
-    modifier = Modifier.semantics {
-        traversalIndex = 0f // read first
-    }
-) {
-    Text("Important announcement")
-}
-
-Column(
-    modifier = Modifier.semantics {
-        traversalIndex = 1f // read second
-    }
-) {
-    Text("Secondary content")
+// traversalIndex orders siblings within the same traversal group (lower reads
+// first, default 0f). Mark the container with isTraversalGroup = true so its
+// children are traversed together before the reader moves on.
+Column(modifier = Modifier.semantics { isTraversalGroup = true }) {
+    Text(
+        "Important announcement",
+        modifier = Modifier.semantics { traversalIndex = -1f } // read first
+    )
+    Text("Secondary content") // default 0f, read second
 }
 ```
 
@@ -223,10 +220,10 @@ Text("Body text")
 Image(systemName: "star.fill")
     .frame(width: iconSize, height: iconSize)
 
-// Fixed minimum line height
+// Never fix heights around text; let containers grow with the font
 Text("Important text")
     .font(.body)
-    .lineSpacing(4)
+    .lineSpacing(4) // extra spacing is fixed points; the font itself scales
 ```
 
 ### Reduce Motion Support
@@ -248,17 +245,22 @@ Button("Animate") {
 ### VoiceOver Rotor Support
 
 ```swift
-List(items) { item in
-    ItemRow(item: item)
-        .accessibilityRotorEntry(id: item.id, in: .headings)
-}
+// Feed the built-in Headings rotor by marking headings
+Text("Section Title")
+    .accessibilityAddTraits(.isHeader)
+    .accessibilityHeading(.h2) // optional level for nested structure
 
-// Custom rotor
+// Custom rotor: entry ids must match the row identities inside the List
+List(messages) { message in
+    MessageRow(message: message)
+}
 .accessibilityRotor("Unread Messages") {
     ForEach(messages.filter(\.isUnread)) { message in
         AccessibilityRotorEntry(message.subject, id: message.id)
     }
 }
+// Note: accessibilityRotorEntry(id:in:) takes a Namespace.ID to tie a view
+// outside a List/ForEach to a rotor entry - not a system rotor.
 ```
 
 ### Accessibility Actions
@@ -275,20 +277,20 @@ ItemRow(item: item)
 
 ## Cross-Platform Patterns
 
-### Color Contrast Requirements (WCAG 2.1)
+### Color Contrast Requirements (WCAG 2.1/2.2 — same ratios)
 
 ```
 Minimum contrast ratios:
 - Normal text:     4.5:1 (AA)
-- Large text:      3.0:1 (AA, >=18sp or >=14sp bold)
-- UI components:   3.0:1 (AA)
+- Large text:      3.0:1 (AA, >=18pt regular or >=14pt bold; ~24sp / ~18sp)
+- UI components:   3.0:1 (AA, non-text contrast)
 - Enhanced (AAA):  7.0:1 for normal text, 4.5:1 for large text
 
-Common passing combinations:
-- #000000 on #FFFFFF -> 21:1 (pass all)
-- #595959 on #FFFFFF -> 7.0:1 (pass AAA)
+Reference values on white:
+- #000000 on #FFFFFF -> 21:1   (pass all)
+- #595959 on #FFFFFF -> 7.0:1  (pass AAA)
 - #767676 on #FFFFFF -> 4.54:1 (pass AA)
-- #949494 on #FFFFFF -> 2.95:1 (FAIL AA)
+- #949494 on #FFFFFF -> 3.03:1 (FAIL AA normal text; large text/UI only)
 ```
 
 ### Focus Management
@@ -335,9 +337,12 @@ Text(
 ```
 
 ```swift
-// iOS: Post accessibility notification
+// iOS 17+: Post accessibility notification
 AccessibilityNotification.Announcement("Invalid email address")
     .post()
+
+// Pre-iOS 17 fallback:
+UIAccessibility.post(notification: .announcement, argument: "Invalid email address")
 ```
 
 ## Testing Accessibility
@@ -355,9 +360,23 @@ fun profileCard_hasCorrectSemantics() {
         .onNodeWithContentDescription("User profile photo")
         .assertExists()
 
+    // Touch target assertions (include the enforced minimum, not just layout size)
     composeTestRule
         .onNode(hasClickAction() and hasText("View Profile"))
-        .assert(hasMinimumTouchTargetSize())
+        .assertTouchWidthIsEqualTo(48.dp)
+        .assertTouchHeightIsEqualTo(48.dp)
+}
+
+// Automated checks via the Accessibility Test Framework (Compose UI 1.8+;
+// add androidx.compose.ui:ui-test-junit4-accessibility). Flags missing labels,
+// small touch targets, low contrast, and traversal-order problems.
+// AndroidComposeTestRule only, and the extension is @RequiresApi(34):
+// the emulator/device running the test must be API 34+.
+@Test
+fun profileCard_passesAccessibilityChecks() {
+    composeTestRule.setContent { ProfileCard(user = testUser) }
+    composeTestRule.enableAccessibilityChecks() // after setContent
+    composeTestRule.onRoot().tryPerformAccessibilityChecks()
 }
 ```
 

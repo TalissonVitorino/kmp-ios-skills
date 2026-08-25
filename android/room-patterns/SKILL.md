@@ -10,18 +10,35 @@ description: Room persistence for the Android target (androidx.room) - @Entity, 
 ```kotlin
 plugins {
     id("com.google.devtools.ksp") version "2.3.10"
+    id("androidx.room") version "2.8.4" // Room Gradle plugin: schema location + auto-migration wiring
+}
+
+room {
+    schemaDirectory("$projectDir/schemas")
 }
 
 dependencies {
-    val roomVersion = "2.8.3"
+    val roomVersion = "2.8.4"
     implementation("androidx.room:room-runtime:$roomVersion")
-    implementation("androidx.room:room-ktx:$roomVersion")
     ksp("androidx.room:room-compiler:$roomVersion")
     testImplementation("androidx.room:room-testing:$roomVersion")
 }
 ```
 
-> Room added Kotlin Multiplatform support in 2.7.x (shared `commonMain` DAOs/entities via a bundled SQLite driver). Room 3.0 moves to the new `androidx.room3` package/coordinates so KMP can evolve without breaking existing Android apps; the `androidx.room` 2.8.x line above stays valid for Android-only projects.
+> **Artifacts.** `room-ktx` was merged into `room-runtime` in 2.7.0 — the artifact is now empty, remove it. `room-testing`, `room-paging`, `room-rxjava3`, `room-guava` remain separate.
+
+### Room 2.x vs Room 3
+
+Room 3.0 is stable (3.0.1, July 2026) under new coordinates: `androidx.room3:room3-runtime` / `room3-compiler`, Gradle plugin id `androidx.room3` with a `room3 { schemaDirectory(...) }` extension, package `androidx.room3`. `androidx.room` 2.8.x is in maintenance mode — bug-fix patches only, no new features. Stay on 2.8.x for an existing Android-only codebase; start new code, and anything heading to KMP, on `androidx.room3`.
+
+Room 3 differences that break the snippets below:
+
+- Kotlin-only codegen, KSP-only — no KAPT, no Java annotation processing.
+- Coroutines-first: every non-reactive DAO function must be `suspend`; blocking DAO functions are rejected at compile time.
+- SupportSQLite is gone in favor of the `androidx.sqlite` driver API. `Migration.migrate(db: SupportSQLiteDatabase)` becomes `abstract suspend fun migrate(connection: SQLiteConnection)`, and `openHelper.writableDatabase` becomes `roomDatabase.getSupportWrapper()` from the `room3-sqlite-wrapper` bridge artifact.
+- Non-scalar DAO return types are opt-in: register the converter class with `@DaoReturnTypeConverters(...)` on the `@Dao` or `@Database` (`@DaoReturnTypeConverter` annotates the converter function itself). `PagingSource` needs `@DaoReturnTypeConverters(PagingSourceDaoReturnTypeConverter::class)` from `room3-paging`; `LiveData` needs `LiveDataDaoReturnTypeConverter` from `room3-livedata`. Without it KSP fails with "Not sure how to convert the query result to this function's return type".
+
+Room 2.7+ already exposes the driver APIs (`setDriver(BundledSQLiteDriver())`, `setQueryCoroutineContext(...)`), so migrating to those first makes the 3.0 jump mechanical.
 
 ## Entity Definitions
 
@@ -98,7 +115,7 @@ interface UserDao {
     @Query("SELECT * FROM users WHERE email = :email LIMIT 1")
     suspend fun findByEmail(email: String): UserEntity?
 
-    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    @Upsert
     suspend fun upsert(user: UserEntity): Long
 
     @Insert(onConflict = OnConflictStrategy.IGNORE)
@@ -187,11 +204,35 @@ val MIGRATION_1_2 = object : Migration(1, 2) {
 }
 
 // Destructive fallback for development
+// (the no-arg overload is deprecated since 2.7)
 val database = Room.databaseBuilder(context, AppDatabase::class.java, "app.db")
     .addMigrations(MIGRATION_1_2)
-    .fallbackToDestructiveMigration() // only in debug builds
+    .fallbackToDestructiveMigration(dropAllTables = true) // only in debug builds
     .build()
 ```
+
+### Auto-migrations
+
+Room derives the SQL by diffing the exported schema JSONs, so the plugin's `schemaDirectory` is a hard prerequisite. Purely additive changes (new table, new nullable column, new NOT NULL column carrying `@ColumnInfo(defaultValue = ...)`) need no code:
+
+```kotlin
+@Database(
+    entities = [...],
+    version = 3,
+    autoMigrations = [AutoMigration(from = 2, to = 3)]
+)
+```
+
+Changes Room cannot infer — dropped or renamed columns and tables — need a spec:
+
+```kotlin
+@RenameColumn(tableName = "users", fromColumnName = "avatar_url", toColumnName = "photo_url")
+class RenamePhotoUrl : AutoMigrationSpec
+
+// AutoMigration(from = 3, to = 4, spec = RenamePhotoUrl::class)
+```
+
+Auto- and manual migrations coexist across different version pairs; if both are declared for the *same* pair, Room runs the manual `Migration`.
 
 ## Room + Koin Injection
 
@@ -271,24 +312,22 @@ class UserDaoTest {
     }
 
     @Test
-    fun observeUsersEmitsUpdates() = runTest {
-        val emissions = mutableListOf<List<UserEntity>>()
-        val job = launch(UnconfinedTestDispatcher()) {
-            userDao.observeAll().toList(emissions)
-        }
+    fun observeUsersEmitsCurrentRows() = runTest {
         userDao.upsert(UserEntity(displayName = "Bob", email = "bob@test.com"))
-        advanceUntilIdle()
-        assertTrue(emissions.last().any { it.displayName == "Bob" })
-        job.cancel()
+
+        val users = userDao.observeAll().first()
+        assertEquals("Bob", users.single().displayName)
     }
 }
 ```
 
+> Do not assert on *subsequent* emissions with `advanceUntilIdle()`. Room's `InvalidationTracker` delivers on its own real background executor, which the `runTest` virtual clock does not drive, so the assertion races the refresh. To make invalidation deterministic, build the database with `.setQueryCoroutineContext(StandardTestDispatcher(testScheduler))` (Room 2.7+) — but note that a single-threaded dispatcher deadlocks on `@Transaction` DAO functions, which need a thread to themselves. Otherwise collect with Turbine and let it wait in real time.
+
 ## Best Practices
 
 - Always use `Flow` return types for reactive queries; use `suspend` for one-shot operations.
-- Prefer `OnConflictStrategy.REPLACE` for upsert patterns, `IGNORE` for insert-if-absent.
-- Export schemas (`exportSchema = true`) to track migration history in version control.
+- Prefer `@Upsert` (Room 2.5+) over `@Insert(onConflict = REPLACE)`: REPLACE deletes then re-inserts, which fires `ON DELETE` cascades and deletes FK children; `@Upsert` does insert-or-update. Use `IGNORE` for insert-if-absent.
+- Export schemas (`exportSchema = true`, default) and set `schemaDirectory` via the Room Gradle plugin; commit the JSON files — they drive `MigrationTestHelper` and `@AutoMigration`.
 - Use `@Transaction` for queries returning relations or when performing multi-step writes.
 - Keep entity classes as pure data holders; map to domain models in the repository layer.
 - Use KSP instead of KAPT for Room annotation processing (faster build times).
