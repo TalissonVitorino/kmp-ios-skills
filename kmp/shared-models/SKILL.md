@@ -14,7 +14,7 @@ Design and implement data models that work across all platforms in `shared/commo
 kotlin {
     sourceSets {
         commonMain.dependencies {
-            implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.11.0")
+            implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.12.0")
             implementation("org.jetbrains.kotlinx:kotlinx-datetime:0.8.0")
             // As of kotlinx-datetime 0.7, Instant/Clock moved to kotlin.time
             // (import kotlin.time.Instant / kotlin.time.Clock); LocalDate/TimeZone stay in kotlinx.datetime.

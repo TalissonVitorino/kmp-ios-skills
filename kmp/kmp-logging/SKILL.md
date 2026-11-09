@@ -1,6 +1,6 @@
 ---
 name: kmp-logging
-description: Multiplatform logging in Kotlin Multiplatform with Kermit (co.touchlab:kermit:2.0.7). Use when adding logging to shared code - the global Logger, severity levels (v/d/i/w/e/a), Logger.withTag for per-class tags, configuring LogWriters and minSeverity, building a custom Logger with StaticConfig, and routing warnings/errors to Crashlytics or Bugsnag. Kermit writes to Logcat on Android and OSLog on iOS automatically; Napier is a lighter alternative. For Android-only Logcat/ADB/ANR debugging use android-skills:android-debugging; for analytics events (not logs) use analytics-patterns.
+description: Multiplatform logging in Kotlin Multiplatform with Kermit (co.touchlab:kermit:2.2.0). Use when adding logging to shared code - the global Logger, severity levels (v/d/i/w/e/a), Logger.withTag for per-class tags, configuring LogWriters and minSeverity, building a custom Logger with StaticConfig, and routing warnings/errors to Crashlytics or Bugsnag. Kermit writes to Logcat on Android and OSLog on iOS automatically; Napier is a lighter alternative. For Android-only Logcat/ADB/ANR debugging use android-skills:android-debugging; for analytics events (not logs) use analytics-patterns.
 ---
 
 # KMP Logging (Kermit)
@@ -20,7 +20,7 @@ description: Multiplatform logging in Kotlin Multiplatform with Kermit (co.touch
 
 ```kotlin
 commonMain.dependencies {
-    implementation("co.touchlab:kermit:2.0.7")
+    implementation("co.touchlab:kermit:2.2.0")
     // implementation("co.touchlab:kermit-crashlytics:2.0.7") // optional
 }
 ```

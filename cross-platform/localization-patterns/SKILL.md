@@ -339,7 +339,7 @@ plugins {
 }
 
 kotlin.sourceSets.commonMain.dependencies {
-    api("dev.icerock.moko:resources:0.26.4") // api, so the iOS framework exports MR
+    api("dev.icerock.moko:resources:0.27.1") // api, so the iOS framework exports MR
 }
 
 multiplatformResources {

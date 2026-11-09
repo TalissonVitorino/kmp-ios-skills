@@ -9,7 +9,7 @@ description: Pagination patterns for mobile - Paging 3 for Android (PagingSource
 
 ```kotlin
 dependencies {
-    val pagingVersion = "3.5.1"
+    val pagingVersion = "3.5.3"
     implementation("androidx.paging:paging-compose:$pagingVersion") // brings in paging-common
     implementation("androidx.paging:paging-runtime:$pagingVersion") // only for RecyclerView/PagingDataAdapter
     testImplementation("androidx.paging:paging-testing:$pagingVersion")
@@ -20,10 +20,10 @@ KMP note: `paging-common` and `paging-testing` went multiplatform in 3.3; `pagin
 
 ```kotlin
 // KMP: commonMain
-implementation("androidx.paging:paging-common:3.5.1")
-implementation("androidx.paging:paging-compose:3.5.1")
+implementation("androidx.paging:paging-common:3.5.3")
+implementation("androidx.paging:paging-compose:3.5.3")
 // androidMain, only if you also use RecyclerView/PagingDataAdapter
-implementation("androidx.paging:paging-runtime:3.5.1")
+implementation("androidx.paging:paging-runtime:3.5.3")
 ```
 
 Paging 3.5 added `append()`, `prepend()`, `refresh()`, `refresh(item)` and `retry()` as members on `Pager` itself, for driving loads without a UI presenter, plus the `Flow<PagingData<T>>.asItemSnapshotListFlow()` operator, which converts the stream into a `Flow<ItemSnapshotList<T>>` that can be combined with other sources, shared by multiple collectors without `cachedIn`, or exposed as part of UI state.

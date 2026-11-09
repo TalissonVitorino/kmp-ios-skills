@@ -27,8 +27,8 @@ To verify digital credentials in your Android project, do the following:
 Add the following dependencies to your Gradle build script:
 
     dependencies {
-        implementation("androidx.credentials:credentials:1.6.0-beta01")
-        implementation("androidx.credentials:credentials-play-services-auth:1.6.0-beta01")
+        implementation("androidx.credentials:credentials:1.6.0")
+        implementation("androidx.credentials:credentials-play-services-auth:1.6.0")
     }
 
 Next, Initialize an instance of the `CredentialManager` class.

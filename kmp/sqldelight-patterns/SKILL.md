@@ -10,7 +10,7 @@ description: SQLDelight for Kotlin Multiplatform shared persistence - .sq files 
 ```kotlin
 // build.gradle.kts (shared module)
 plugins {
-    id("app.cash.sqldelight") version "2.3.2"
+    id("app.cash.sqldelight") version "2.4.1"
 }
 
 sqldelight {
@@ -27,14 +27,14 @@ sqldelight {
 kotlin {
     sourceSets {
         commonMain.dependencies {
-            implementation("app.cash.sqldelight:coroutines-extensions:2.3.2")
-            implementation("app.cash.sqldelight:primitive-adapters:2.3.2")
+            implementation("app.cash.sqldelight:coroutines-extensions:2.4.1")
+            implementation("app.cash.sqldelight:primitive-adapters:2.4.1")
         }
         androidMain.dependencies {
-            implementation("app.cash.sqldelight:android-driver:2.3.2")
+            implementation("app.cash.sqldelight:android-driver:2.4.1")
         }
         iosMain.dependencies {
-            implementation("app.cash.sqldelight:native-driver:2.3.2")
+            implementation("app.cash.sqldelight:native-driver:2.4.1")
         }
     }
 }
@@ -312,7 +312,7 @@ shared/
 
 ## Testing with In-Memory Driver
 
-`JdbcSqliteDriver` is JVM-only (`app.cash.sqldelight:sqlite-driver:2.3.2`) — put these tests in `jvmTest` or `androidUnitTest`, not `commonTest`.
+`JdbcSqliteDriver` is JVM-only (`app.cash.sqldelight:sqlite-driver:2.4.1`) — put these tests in `jvmTest` or `androidUnitTest`, not `commonTest`.
 
 ```kotlin
 class UserRepositoryTest {
@@ -351,7 +351,7 @@ The dialect defaults to SQLite 3.18; in a module that applies an Android Gradle 
 ```kotlin
 create("AppDatabase") {
     packageName.set("com.example.db")
-    dialect("app.cash.sqldelight:sqlite-3-38-dialect:2.3.2")
+    dialect("app.cash.sqldelight:sqlite-3-38-dialect:2.4.1")
 }
 ```
 

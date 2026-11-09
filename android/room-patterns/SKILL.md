@@ -10,7 +10,7 @@ description: Room persistence for the Android target (androidx.room) - @Entity, 
 ```kotlin
 plugins {
     id("com.google.devtools.ksp") version "2.3.10"
-    id("androidx.room") version "2.8.4" // Room Gradle plugin: schema location + auto-migration wiring
+    id("androidx.room") version "2.8.5" // Room Gradle plugin: schema location + auto-migration wiring
 }
 
 room {
@@ -18,7 +18,7 @@ room {
 }
 
 dependencies {
-    val roomVersion = "2.8.4"
+    val roomVersion = "2.8.5"
     implementation("androidx.room:room-runtime:$roomVersion")
     ksp("androidx.room:room-compiler:$roomVersion")
     testImplementation("androidx.room:room-testing:$roomVersion")

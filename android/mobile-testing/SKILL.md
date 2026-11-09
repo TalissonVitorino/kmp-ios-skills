@@ -13,12 +13,12 @@ dependencies {
     testImplementation(platform("org.junit:junit-bom:6.1.3")) // JUnit 6 / Jupiter 6 — requires Java 17+
     testImplementation("org.junit.jupiter:junit-jupiter")
     testRuntimeOnly("org.junit.platform:junit-platform-launcher") // mandatory since Gradle 9
-    testImplementation("io.mockk:mockk:1.14.11")
+    testImplementation("io.mockk:mockk:1.14.12")
     testImplementation("app.cash.turbine:turbine:1.2.1")
     testImplementation("org.jetbrains.kotlinx:kotlinx-coroutines-test:1.11.0")
-    testImplementation("io.kotest:kotest-assertions-core:6.2.4")
+    testImplementation("io.kotest:kotest-assertions-core:6.2.6")
 
-    androidTestImplementation(platform("androidx.compose:compose-bom:2026.08.00"))
+    androidTestImplementation(platform("androidx.compose:compose-bom:2026.09.00"))
     androidTestImplementation("androidx.compose.ui:ui-test-junit4")
     debugImplementation("androidx.compose.ui:ui-test-manifest")
 }
@@ -113,11 +113,11 @@ class HomeScreenTest {
 }
 ```
 
-Compose 1.12 (BOM `2026.08.00`) deprecates `createComposeRule`/`createAndroidComposeRule`/`AndroidComposeTestRule` in `androidx.compose.ui.test.junit4`; the replacements keep the same names in `androidx.compose.ui.test.junit4.v2`. The v2 rules run composition on `StandardTestDispatcher` instead of `UnconfinedTestDispatcher`, so tests that relied on effects executing eagerly need an explicit `rule.waitForIdle()` or `rule.mainClock.advanceTimeBy(…)`.
+Compose 1.12 (BOM `2026.09.00`) deprecates `createComposeRule`/`createAndroidComposeRule`/`AndroidComposeTestRule` in `androidx.compose.ui.test.junit4`; the replacements keep the same names in `androidx.compose.ui.test.junit4.v2`. The v2 rules run composition on `StandardTestDispatcher` instead of `UnconfinedTestDispatcher`, so tests that relied on effects executing eagerly need an explicit `rule.waitForIdle()` or `rule.mainClock.advanceTimeBy(…)`.
 
 Test the stateless content composable with a fixed state, not the stateful screen — no DI or ViewModel needed. Use `createAndroidComposeRule<MainActivity>()` (also from `…junit4.v2`) only when the test needs the real Activity (e.g. string resources, back handling); either rule needs `testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"` in `defaultConfig`.
 
-For Compose Multiplatform, the same assertions run from `commonTest` with the rule-free `runComposeUiTest { setContent { … } }` — import `androidx.compose.ui.test.v2.runComposeUiTest`, annotate `@OptIn(ExperimentalTestApi::class)`, and add `org.jetbrains.compose.ui:ui-test:1.12.0` to `commonTest`.
+For Compose Multiplatform, the same assertions run from `commonTest` with the rule-free `runComposeUiTest { setContent { … } }` — import `androidx.compose.ui.test.v2.runComposeUiTest`, annotate `@OptIn(ExperimentalTestApi::class)`, and add `org.jetbrains.compose.ui:ui-test:1.12.2` to `commonTest`.
 
 ## Coverage
 

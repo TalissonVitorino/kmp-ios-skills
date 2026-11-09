@@ -10,7 +10,7 @@ Modern HTTP client for Kotlin.
 ## Dependencies
 
 ```kotlin
-val ktor = "3.5.2"   // current 3.x — verify latest at ktor.io/docs/releases
+val ktor = "3.6.1"   // current 3.x — verify latest at ktor.io/docs/releases
 dependencies {
     implementation("io.ktor:ktor-client-core:$ktor")
     implementation("io.ktor:ktor-client-okhttp:$ktor")

@@ -27,8 +27,8 @@ This skill unifies the three navigation approaches. Pick one with the table, the
 
 ```kotlin
 dependencies {
-    implementation("androidx.navigation:navigation-compose:2.9.8")
-    implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.11.0")
+    implementation("androidx.navigation:navigation-compose:2.10.2")
+    implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.12.0")
 }
 ```
 

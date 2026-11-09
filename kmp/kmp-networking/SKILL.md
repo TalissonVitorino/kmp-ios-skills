@@ -18,7 +18,7 @@ plugins {
     kotlin("plugin.serialization")
 }
 
-val ktor = "3.5.2"   // current 3.x — verify latest at ktor.io/docs/releases
+val ktor = "3.6.1"   // current 3.x — verify latest at ktor.io/docs/releases
 
 kotlin {
     sourceSets {
@@ -29,7 +29,7 @@ kotlin {
                 implementation("io.ktor:ktor-serialization-kotlinx-json:$ktor")
                 implementation("io.ktor:ktor-client-logging:$ktor")
                 implementation("io.ktor:ktor-client-auth:$ktor")            // bearer-token Auth plugin
-                implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.11.0")
+                implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.12.0")
             }
         }
         val androidMain by getting {

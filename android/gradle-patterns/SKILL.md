@@ -12,13 +12,13 @@ Modern Gradle configuration for Android.
 ```toml
 # gradle/libs.versions.toml
 [versions]
-agp = "9.3.2"              # AGP 9.x has built-in Kotlin — see [plugins] note; AGP 9.3 needs Gradle 9.5+
-kotlin = "2.4.10"          # still versions KGP-family plugins (Compose compiler); kotlin-android itself is gone
-ksp = "2.3.11"              # KSP2 — decoupled from the Kotlin version number
-compose-bom = "2026.08.00"
+agp = "9.5.1"              # AGP 9.x has built-in Kotlin — see [plugins] note; needs the matching Gradle — see the AGP release notes
+kotlin = "2.4.21"          # still versions KGP-family plugins (Compose compiler); kotlin-android itself is gone
+ksp = "2.3.13"              # KSP2 — decoupled from the Kotlin version number
+compose-bom = "2026.09.00"
 coroutines = "1.11.0"
 koin = "4.2.2"             # Koin 4.x (major bump from 3.x)
-ktor = "3.5.2"             # Ktor 3.x (major bump from 2.x)
+ktor = "3.6.1"             # Ktor 3.x (major bump from 2.x)
 # compose-compiler: removed. With Kotlin 2.0+ the Compose compiler ships as the
 # org.jetbrains.kotlin.plugin.compose Gradle plugin (versioned with Kotlin) — see [plugins].
 # A standalone compose-compiler catalog entry is obsolete.

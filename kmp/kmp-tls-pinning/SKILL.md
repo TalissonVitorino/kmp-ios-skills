@@ -6,7 +6,7 @@ description: "TLS certificate / SPKI public-key pinning for a SHARED Ktor client
 # KMP TLS / SPKI pinning for a shared Ktor client
 
 Pin the server's **public key (SPKI SHA-256)** for a Ktor client shared in
-`commonMain`. Grounded in Ktor 3.5.x (`ktor-client-okhttp`, `ktor-client-darwin`),
+`commonMain`. Grounded in Ktor 3.6.x (`ktor-client-okhttp`, `ktor-client-darwin`),
 OkHttp's `CertificatePinner`, and Apple's Security framework.
 
 - **The client is shared, the trust mechanism is not.** A KMP Ktor client uses a

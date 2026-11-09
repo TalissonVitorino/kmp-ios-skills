@@ -26,7 +26,7 @@ sourceSets {
         implementation("com.ionspin.kotlin:bignum:0.3.10")            // multiplatform BigDecimal/BigInteger
         // optional ready-made serializers (BigDecimal/BigInteger):
         // implementation("com.ionspin.kotlin:bignum-serialization-kotlinx:0.3.10")
-        implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.11.0")
+        implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.12.0")
     }
 }
 ```
