@@ -7,13 +7,13 @@ description: Material 3 Expressive design patterns for Jetpack Compose - express
 
 Material 3 Expressive extends Material 3 with spring-based motion, morphable shapes, emphasized type styles, a recoloured baseline palette, and a set of new components. This skill covers the Compose implementation in `androidx.compose.material3`.
 
-> **Version gate — verified against material3 1.4.0 and 1.5.0-alpha26 (Aug 2026).**
+> **Version gate — verified against material3 1.4.0 and 1.5.0-rc01. The opt-in surface and the still-experimental components were re-verified by decompiling the 1.5.0-rc01 artifact (Nov 2026); unchanged since alpha26.**
 >
-> - **1.4.0 (stable, Compose BOM `2026.08.00`) exposes almost none of this.** `MaterialExpressiveTheme`, `expressiveLightColorScheme()`, `MotionScheme` / `MotionScheme.expressive()` / `MaterialTheme.motionScheme`, every `*Emphasized` type style, `Shapes.largeIncreased` / `extraLargeIncreased` / `extraExtraLarge`, `MediumFlexibleTopAppBar` / `LargeFlexibleTopAppBar` / `TwoRowsTopAppBar` / `FlexibleBottomAppBar` and `VerticalSlider` are all declared **`internal`** in 1.4.0. Only `WideNavigationRail` and `ShortNavigationBar` are public there.
-> - **Everything else in this skill needs `1.5.0-alpha*`** — toggle buttons, `ButtonGroup`, `SplitButtonLayout`, the FAB menu and sized FABs, floating toolbars, wavy progress indicators, loading indicators, menu groups, the expanded search bars, `MaterialShapes`. In practice: use the alpha BOM or none of this resolves.
-> - **Opt-in:** `ExperimentalMaterial3ExpressiveApi` is itself `internal` in 1.4.0, so the `@OptIn` cannot even be written there. From 1.5.0-alpha23 most expressive APIs graduated to stable; on 1.5.0-alpha26 only `LoadingIndicator` / `ContainedLoadingIndicator` and `MaterialShapes` / `Morph.toPath` / `RoundedPolygon.toShape` still require it. `AppBarWithSearch` and the deprecated `TopSearchBar` need `@OptIn(ExperimentalMaterial3Api::class)` instead — a different annotation. A redundant opt-in is harmless (an "unnecessary @OptIn" warning).
+> - **1.4.0 (stable, Compose BOM `2026.09.00`) exposes almost none of this.** `MaterialExpressiveTheme`, `expressiveLightColorScheme()`, `MotionScheme` / `MotionScheme.expressive()` / `MaterialTheme.motionScheme`, every `*Emphasized` type style, `Shapes.largeIncreased` / `extraLargeIncreased` / `extraExtraLarge`, `MediumFlexibleTopAppBar` / `LargeFlexibleTopAppBar` / `TwoRowsTopAppBar` / `FlexibleBottomAppBar` and `VerticalSlider` are all declared **`internal`** in 1.4.0. Only `WideNavigationRail` and `ShortNavigationBar` are public there.
+> - **Everything else in this skill needs a `1.5.0` pre-release** (currently `1.5.0-rc01`) — toggle buttons, `ButtonGroup`, `SplitButtonLayout`, the FAB menu and sized FABs, floating toolbars, wavy progress indicators, loading indicators, menu groups, the expanded search bars, `MaterialShapes`. In practice: use the `compose-bom-alpha` (it now resolves to the 1.5.0 rc) or none of this resolves — 1.5.0 is not yet on the stable BOM.
+> - **Opt-in:** `ExperimentalMaterial3ExpressiveApi` is itself `internal` in 1.4.0, so the `@OptIn` cannot even be written there. From 1.5.0-alpha23 most expressive APIs graduated to stable; on 1.5.0-alpha26 **through rc01** only `LoadingIndicator` / `ContainedLoadingIndicator` and `MaterialShapes` / `Morph.toPath` / `RoundedPolygon.toShape` still require it. `AppBarWithSearch` and the deprecated `TopSearchBar` need `@OptIn(ExperimentalMaterial3Api::class)` instead — a different annotation. A redundant opt-in is harmless (an "unnecessary @OptIn" warning).
 >
-> Examples below are written for 1.5.0-alpha26 and keep the opt-in annotation. For general Compose state/recomposition work prefer `android-skills:compose`; for non-expressive theming see `compose-theming-styles`.
+> Examples below are written for 1.5.0 (verified against rc01) and keep the opt-in annotation. For general Compose state/recomposition work prefer `android-skills:compose`; for non-expressive theming see `compose-theming-styles`.
 
 ## Gradle Setup
 
@@ -27,10 +27,10 @@ plugins {
 }
 
 dependencies {
-    // Expressive is alpha-only today — the stable BOM keeps these APIs internal.
-    implementation(platform("androidx.compose:compose-bom-alpha:2026.08.00"))   // -> material3 1.5.0-alpha26
+    // Expressive is pre-stable today — the stable BOM keeps these APIs internal (still 1.4.0).
+    implementation(platform("androidx.compose:compose-bom-alpha:2026.11.00"))   // -> material3 1.5.0-rc01
     // Stable alternative, without any expressive API:
-    // implementation(platform("androidx.compose:compose-bom:2026.08.00"))      // -> material3 1.4.0
+    // implementation(platform("androidx.compose:compose-bom:2026.09.00"))      // -> material3 1.4.0
 
     implementation("androidx.compose.material3:material3")
     implementation("androidx.compose.animation:animation")
@@ -85,7 +85,7 @@ fun AppTheme(
             medium = RoundedCornerShape(16.dp),
             large = RoundedCornerShape(24.dp),
             extraLarge = RoundedCornerShape(32.dp),
-            // Increased/extraExtraLarge params exist only on the 8-arg ctor (material3 1.5.0-alpha+).
+            // Increased/extraExtraLarge params exist only on the 8-arg ctor (material3 1.5.0).
             largeIncreased = RoundedCornerShape(28.dp),
             extraLargeIncreased = RoundedCornerShape(36.dp),
         ),
@@ -273,7 +273,7 @@ Prefer `MaterialTheme.motionScheme` tokens over hand-rolled springs; reach for r
 
 ### Shape Morphing Animations
 
-True shape morphing uses `MaterialShapes` (35 predefined `RoundedPolygon`s) and `Morph` from `androidx.graphics:graphics-shapes`. `MaterialShapes`, `Morph.toPath` and `RoundedPolygon.toShape` are still `@ExperimentalMaterial3ExpressiveApi` on 1.5.0-alpha26, and are absent from 1.4.0.
+True shape morphing uses `MaterialShapes` (35 predefined `RoundedPolygon`s) and `Morph` from `androidx.graphics:graphics-shapes`. `MaterialShapes`, `Morph.toPath` and `RoundedPolygon.toShape` are still `@ExperimentalMaterial3ExpressiveApi` on 1.5.0-alpha26 and rc01, and are absent from 1.4.0.
 
 Every `MaterialShapes` polygon is `RoundedPolygon.normalized()`, i.e. fitted into the **(0,0)–(1,1)** unit square, so `Morph.toPath()` over them emits a path in 0..1 and only needs scaling into the component's bounds. (The `scale(size.width / 2f, …)` + `translate(1f, 1f)` matrix in the AOSP shapes guide is for hand-built `RoundedPolygon(radius = 1f, centerX = 0f, centerY = 0f)` shapes, which live in -1..1 — applying it to `MaterialShapes` draws them at double size, off-centre.)
 
@@ -451,7 +451,7 @@ fun ShapeTokensReference() {
     shapes.large               // 16.dp
     shapes.extraLarge          // 28.dp
 
-    // Increased variants (material3 1.5.0-alpha+; internal in 1.4.0)
+    // Increased variants (material3 1.5.0; internal in 1.4.0)
     shapes.largeIncreased      // 20.dp
     shapes.extraLargeIncreased // 32.dp
     shapes.extraExtraLarge     // 48.dp
@@ -779,7 +779,7 @@ fun TertiaryAccentExample() {
 
 ## 6. Expressive Components
 
-Signatures below are material3 1.5.0-alpha26 (see the version gate at the top — none of these are public in 1.4.0). The `@OptIn` annotation is kept throughout for uniformity; on alpha26 it is only load-bearing for the loading indicators and the `MaterialShapes` helpers.
+Signatures below target material3 1.5.0 (opt-in surface re-verified against rc01 — see the version gate at the top; none of these are public in 1.4.0). The `@OptIn` annotation is kept throughout for uniformity; on alpha26 through rc01 it is only load-bearing for the loading indicators and the `MaterialShapes` helpers.
 
 ### 6.1 ButtonGroup
 
@@ -845,7 +845,7 @@ fun CircularWavyProgressDemo() {
 
 ### 6.3 ContainedLoadingIndicator
 
-The morphing loading indicator drawn inside a filled container. Parameters are `containerColor` / `indicatorColor` / `containerShape` — there is no `color` or `shape`. Still `@ExperimentalMaterial3ExpressiveApi` on 1.5.0-alpha26.
+The morphing loading indicator drawn inside a filled container. Parameters are `containerColor` / `indicatorColor` / `containerShape` — there is no `color` or `shape`. Still `@ExperimentalMaterial3ExpressiveApi` on 1.5.0-alpha26 and rc01.
 
 ```kotlin
 @OptIn(ExperimentalMaterial3ExpressiveApi::class)
@@ -1888,7 +1888,7 @@ fun DeferredAnimationReading() {
 
 | # | Mistake | Fix |
 |---|---------|-----|
-| 1 | Wrong opt-in annotation | On 1.5.0-alpha26 only the loading indicators and `MaterialShapes` / `Morph.toPath` / `RoundedPolygon.toShape` need `ExperimentalMaterial3ExpressiveApi`; `AppBarWithSearch` needs `ExperimentalMaterial3Api`. Opting into the wrong one still fails to compile. |
+| 1 | Wrong opt-in annotation | On 1.5.0-alpha26 and rc01 only the loading indicators and `MaterialShapes` / `Morph.toPath` / `RoundedPolygon.toShape` need `ExperimentalMaterial3ExpressiveApi`; `AppBarWithSearch` needs `ExperimentalMaterial3Api`. Opting into the wrong one still fails to compile. |
 | 2 | Using `MaterialTheme` instead of `MaterialExpressiveTheme` | Replace with `MaterialExpressiveTheme` to get expressive defaults for motion, shapes, and typography. |
 | 3 | Using duration-based `tween()` for all animations | Use spring-based specs from `MaterialTheme.motionScheme` for physics-based motion. Reserve `tween()` for color and opacity only. |
 | 4 | Creating spring specs inline in composable body | Wrap with `remember { spring(...) }` or use motion scheme tokens to avoid allocation per recomposition. |
@@ -1909,7 +1909,7 @@ fun DeferredAnimationReading() {
 
 ## Quick Reference: Component Selection Guide
 
-Everything below requires material3 `1.5.0-alpha*` — including the flexible app bars and `VerticalSlider`, which are `internal` in 1.4.0.
+Everything below requires a material3 `1.5.0` pre-release — including the flexible app bars and `VerticalSlider`, which are `internal` in 1.4.0.
 
 | Need | Component |
 |------|-----------|
