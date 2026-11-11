@@ -37,7 +37,7 @@ KSP|C|com/google/devtools/ksp/symbol-processing-api|2.3.13|ksp = "
 Compose-BOM|G|androidx/compose/compose-bom|2026.09.00|compose-bom
 Ktor|C|io/ktor/ktor-client-core|3.6.1|io.ktor:ktor-client
 kotlinx-coroutines|C|org/jetbrains/kotlinx/kotlinx-coroutines-core|1.11.0|kotlinx-coroutines-core
-kotlinx-serialization|C|org/jetbrains/kotlinx/kotlinx-serialization-json|1.12.0|kotlinx-serialization-json
+kotlinx-serialization|C|org/jetbrains/kotlinx/kotlinx-serialization-json|1.13.0|kotlinx-serialization-json
 kotlinx-datetime|C|org/jetbrains/kotlinx/kotlinx-datetime|0.8.0|kotlinx-datetime
 Koin|C|io/insert-koin/koin-bom|4.2.2|koin-bom
 SQLDelight|C|app/cash/sqldelight/gradle-plugin|2.4.1|app.cash.sqldelight

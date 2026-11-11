@@ -29,7 +29,7 @@ kotlin {
                 implementation("io.ktor:ktor-serialization-kotlinx-json:$ktor")
                 implementation("io.ktor:ktor-client-logging:$ktor")
                 implementation("io.ktor:ktor-client-auth:$ktor")            // bearer-token Auth plugin
-                implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.12.0")
+                implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.13.0")
             }
         }
         val androidMain by getting {
