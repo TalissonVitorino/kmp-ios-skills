@@ -1,0 +1,48 @@
+name: Dependency pin audit
+
+# Monthly check that the version pins in the skills haven't fallen behind the
+# latest stable on Maven. Runs scripts/check-versions.sh and, when something is
+# behind, opens (or comments on) a tracking issue. Also runnable on demand from
+# the Actions tab (Run workflow).
+
+on:
+  schedule:
+    - cron: "0 9 1 * *" # 09:00 UTC on the 1st of every month
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4.2.2
+
+      - name: Run version audit
+        id: audit
+        run: |
+          set +e
+          bash scripts/check-versions.sh | tee report.txt
+          echo "code=${PIPESTATUS[0]}" >> "$GITHUB_OUTPUT"
+
+      - name: Open or update issue when pins are behind
+        if: steps.audit.outputs.code == '1'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          body="$(printf 'The monthly audit found version pins behind the latest stable on Maven.\n\n```\n%s\n```\n\nBump the skill(s) listed above and the matching `PIN` rows in `scripts/check-versions.sh`.' "$(cat report.txt)")"
+          gh label create deps-audit --color FBCA04 --description "Automated dependency pin audit" 2>/dev/null || true
+          existing="$(gh issue list --state open --label deps-audit --json number --jq '.[0].number // empty')"
+          if [ -n "$existing" ]; then
+            gh issue comment "$existing" --body "$body"
+          else
+            gh issue create --title "Dependency pins out of date" --label deps-audit --body "$body"
+          fi
+
+      - name: Fail the run if a lookup errored
+        if: steps.audit.outputs.code == '2'
+        run: |
+          echo "::error::check-versions.sh could not reach Maven for one or more libraries."
+          exit 1
